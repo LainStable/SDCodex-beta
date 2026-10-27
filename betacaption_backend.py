@@ -80,6 +80,7 @@ _batch_lock = threading.RLock()
 _batch = {
     "job_id": 0, "state": "idle", "folder_path": "", "current": 0,
     "total": 0, "file": "", "event_id": 0, "events": [], "cancel": False,
+    "pause": False,
 }
 
 
@@ -107,6 +108,14 @@ def _run_caption_batch(job_id, image_files, folder_path, prompt, url, model, mod
             with _batch_lock:
                 if job_id != _batch["job_id"] or _batch["cancel"]:
                     break
+            # A paused batch waits here until it is resumed or stopped.
+            while True:
+                with _batch_lock:
+                    if job_id != _batch["job_id"] or _batch["cancel"]:
+                        break
+                    if not _batch["pause"]:
+                        break
+                time.sleep(0.25)
             img_path = os.path.join(folder_path, fname)
             txt_path = os.path.join(folder_path, os.path.splitext(fname)[0] + ".txt")
 
@@ -548,7 +557,7 @@ def _start_caption_batch(data):
         _batch.update({
             "job_id": _batch["job_id"] + 1, "state": "running", "folder_path": folder_path,
             "current": 0, "total": len(image_files), "file": "", "event_id": 0,
-            "events": [], "cancel": False, "last_error": "", "started_at": time.time(),
+            "events": [], "cancel": False, "pause": False, "last_error": "", "started_at": time.time(),
         })
         job_id = _batch["job_id"]
     worker = threading.Thread(
@@ -614,7 +623,7 @@ def caption_batch_status():
 def caption_task():
     """Normalized progress for the core's floating task notification."""
     with _batch_lock:
-        if _batch["state"] not in ("running", "cancelling"):
+        if _batch["state"] not in ("running", "cancelling", "paused"):
             return jsonify({"active": False})
         return jsonify({
             "active": True,
@@ -628,12 +637,28 @@ def caption_task():
         })
 
 
+@caption_bp.post("/batch/pause")
+def pause_caption_batch():
+    """Pause or resume a running batch (the task float's pause button)."""
+    with _batch_lock:
+        if _batch["state"] not in ("running", "cancelling"):
+            return jsonify({"ok": True, "state": _batch["state"], "paused": False})
+        if _batch["pause"]:
+            _batch["pause"] = False
+            _batch["state"] = "running"
+            return jsonify({"ok": True, "state": "running", "paused": False})
+        _batch["pause"] = True
+        _batch["state"] = "paused"
+        return jsonify({"ok": True, "state": "paused", "paused": True})
+
+
 @caption_bp.post("/batch/stop")
 def stop_caption_batch():
     with _batch_lock:
         if _batch["state"] != "running":
             return jsonify({"ok": True, "state": _batch["state"]})
         _batch["cancel"] = True
+        _batch["pause"] = False
         _batch["state"] = "cancelling"
         return jsonify({"ok": True, "state": "cancelling"})
 

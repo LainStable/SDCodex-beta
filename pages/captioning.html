@@ -95,6 +95,16 @@ tailwind.config = {
   .asset-thumbnail { aspect-ratio: 4 / 3; background: #080b12; }
   .asset-thumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
+  /* Checkerboard viewer background so the active image reads as a media viewer. */
+  .checkerboard {
+    background-color: #080b12;
+    background-image:
+      linear-gradient(45deg, #0d111a 25%, transparent 25%, transparent 75%, #0d111a 75%, #0d111a),
+      linear-gradient(45deg, #0d111a 25%, transparent 25%, transparent 75%, #0d111a 75%, #0d111a);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+  }
+
   /* Live on-disk explorer rail (Gallery-style folder chips + counts). */
   .explorer-rail { display: flex; align-items: center; gap: 4px; overflow-x: auto; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); scrollbar-width: thin; }
   .explorer-rail:empty { display: none; }
@@ -154,54 +164,45 @@ tailwind.config = {
   </div>
 </header>
 
-<!-- ===== FOLDER / MODEL BAR ===== -->
-<div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2 border-b border-outline-variant/20 bg-surface-container/50 text-body-sm">
-  <!-- Folder picker -->
-  <span class="material-symbols-outlined text-outline text-[16px]">folder_open</span>
-  <div class="flex-1 relative">
-    <input id="folder-input" type="text" placeholder="/data/downloads  (type a path or browse →)"
-           class="w-full bg-surface-container-lowest border border-outline-variant/40 rounded px-2.5 py-1 text-body-sm text-on-surface placeholder:text-outline/60 focus:outline-none focus:border-badge-checkpoint"/>
-  </div>
-  <button id="btn-browse" title="Browse folders & images" class="sd-btn sd-btn-icon">
-    <span class="material-symbols-outlined text-[16px]">manage_search</span>
-  </button>
-  <button id="btn-load" class="sd-btn">
-    Load Folder
-  </button>
+<!-- ===== COMBINED APP CONTROLS ===== -->
+<!-- All captioning controls folded into one compact toolbar so the left pane
+     can be the full-height Gallery browser. The legacy grid below is hidden
+     but its JS still drives selection, loading and batch state. -->
+<div class="shrink-0 flex flex-wrap items-center gap-2 gap-y-2 px-3 py-1.5 border-b border-outline-variant/20 bg-surface-container/50 text-body-sm">
+  <!-- Current caption folder (resolved by the server from the environment) -->
+  <span class="material-symbols-outlined text-outline text-[16px] shrink-0">folder_open</span>
+  <span id="folder-display" class="min-w-0 flex-1 font-code-sm text-code-sm text-on-surface-variant truncate" aria-live="polite">Loading folder…</span>
 
-  <div class="h-4 w-px bg-outline-variant/30 mx-1"></div>
+  <div class="h-4 w-px bg-outline-variant/30 mx-1 hidden sm:flex"></div>
 
   <!-- LM Studio URL -->
-  <span class="material-symbols-outlined text-outline text-[16px]">hub</span>
+  <span class="material-symbols-outlined text-outline text-[16px] shrink-0">hub</span>
   <input id="lm-url" type="text" value="http://localhost:1234/v1" placeholder="LM Studio URL"
-         class="w-52 bg-surface-container-lowest border border-outline-variant/40 rounded px-2.5 py-1 text-body-sm text-on-surface placeholder:text-outline/60 focus:outline-none focus:border-badge-checkpoint"/>
-  <button id="btn-connect" class="sd-btn">
-    Connect
-  </button>
+         class="w-36 lg:w-44 bg-surface-container-lowest border border-outline-variant/40 rounded px-2 py-1 text-body-sm text-on-surface placeholder:text-outline/60 focus:outline-none focus:border-badge-checkpoint"/>
+  <button id="btn-connect" class="sd-btn sd-btn-sm shrink-0">Connect</button>
 
   <!-- Model selector (populated after connect) -->
-  <select id="model-select" class="bg-surface-container border border-outline-variant/40 rounded px-2 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint">
+  <select id="model-select" class="min-w-0 w-32 lg:w-40 bg-surface-container border border-outline-variant/40 rounded px-2 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint">
     <option value="">— select model —</option>
   </select>
-</div>
 
-<!-- Saved prompt presets from the previous captioning version. -->
-<div class="shrink-0 flex flex-wrap items-center gap-2 px-4 py-1 border-b border-outline-variant/20 bg-surface-container/40 text-body-sm">
-  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap">Prompt Presets</span>
-  <select id="saved-prompt-select" class="min-w-0 flex-1 bg-surface-container-lowest border border-outline-variant/30 rounded px-2 py-1 text-body-sm text-on-surface"><option value="">Choose a saved prompt</option></select>
-  <button id="save-prompt-btn" class="sd-btn sd-btn-sm">Save current</button>
-  <button id="delete-prompt-btn" class="sd-btn sd-btn-sm sd-btn-danger">Delete selected</button>
-</div>
+  <div class="h-4 w-px bg-outline-variant/30 mx-1 hidden md:flex"></div>
 
-<!-- ===== PROMPT / TRIGGER BAR ===== -->
-<div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-1.5 border-b border-outline-variant/20 bg-surface-container-lowest/60 text-body-sm">
-  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap">System Prompt</span>
-  <input id="prompt-input" type="text"
+  <!-- Saved prompt presets -->
+  <select id="saved-prompt-select" aria-label="Prompt presets" class="min-w-0 w-28 lg:w-40 bg-surface-container-lowest border border-outline-variant/30 rounded px-2 py-1 text-body-sm text-on-surface"><option value="">Choose a saved prompt</option></select>
+  <button id="save-prompt-btn" class="sd-btn sd-btn-sm shrink-0">Save current</button>
+  <button id="delete-prompt-btn" class="sd-btn sd-btn-sm sd-btn-danger shrink-0">Delete selected</button>
+
+  <div class="h-4 w-px bg-outline-variant/30 mx-1 hidden xl:flex"></div>
+
+  <!-- System prompt + trigger tag -->
+  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap hidden xl:inline">System Prompt</span>
+  <input id="prompt-input" type="text" aria-label="System prompt"
          value="Write a short, detailed, natural-language caption for this image. Focus on the subject, style, and mood. Be concise."
-         class="flex-1 bg-transparent border border-outline-variant/30 rounded px-2.5 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
-  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap">Trigger Tag</span>
-  <input id="trigger-tag" type="text" placeholder="e.g. ohwx person" maxlength="120"
-         class="w-36 bg-transparent border border-outline-variant/30 rounded px-2.5 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
+         class="min-w-0 flex-1 xl:flex-none xl:w-56 bg-transparent border border-outline-variant/30 rounded px-2 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
+  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap hidden xl:inline">Trigger Tag</span>
+  <input id="trigger-tag" type="text" aria-label="Trigger tag" placeholder="e.g. ohwx person" maxlength="120"
+         class="w-28 lg:w-32 bg-transparent border border-outline-variant/30 rounded px-2 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
 </div>
 
 <!-- ===== PROGRESS BAR (hidden until batch) ===== -->
@@ -218,8 +219,19 @@ tailwind.config = {
 <!-- ===== MAIN 2-COLUMN WORKSPACE ===== -->
 <main class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-y-3 overflow-visible">
 
-  <!-- ===== LEFT: image grid ===== -->
-  <section class="w-full xl:w-auto min-h-[260px] max-h-[42vh] xl:max-h-none flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+  <!-- ===== LEFT: embedded boilerplate browser ===== -->
+  <section class="w-full xl:w-auto min-h-[260px] xl:min-h-0 flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+    <iframe id="caption-browser" title="Media browser"
+            src="/api/plugins/betacaption/page/browser?embed=caption"
+            class="w-full h-full border-0 bg-obsidian-lowest"></iframe>
+  </section>
+
+  <!-- HIDDEN: legacy ComfyCaption-style grid section.
+       It remains in the DOM because its JS (allImages, renderGrid, renderExplorer,
+       updatePagination, selectImage, the filter buttons and the batch flow) is
+       still the backbone of the captioning app. It is simply no longer shown;
+       the boilerplate browser above now provides the visible media grid. -->
+  <section id="legacy-grid-section" class="hidden w-full xl:w-auto min-h-[260px] max-h-[42vh] xl:max-h-none flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
     <!-- Stats strip -->
     <div class="shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-outline-variant/15 text-body-sm">
       <span id="grid-stats" class="font-code-sm text-code-sm text-outline">No folder loaded</span>
@@ -249,7 +261,7 @@ tailwind.config = {
   <!-- ===== RIGHT: active image + details + caption ===== -->
   <section class="min-w-0 min-h-[520px] xl:min-h-0 xl:h-full flex flex-col xl:border-l border-outline-variant/20 overflow-hidden">
     <!-- Image viewer -->
-    <div class="flex-1 min-h-0 relative bg-black/40 flex items-center justify-center overflow-hidden">
+    <div class="flex-1 min-h-0 relative bg-black/40 checkerboard flex items-center justify-center overflow-hidden">
       <img id="active-img" src="" alt="" class="max-w-full max-h-full object-contain hidden"/>
       <div id="img-placeholder" class="flex flex-col items-center justify-center gap-3 text-outline">
         <span class="material-symbols-outlined text-[48px]">image</span>
@@ -329,21 +341,6 @@ tailwind.config = {
   </section>
 </main>
 
-<!-- ===== FOLDER BROWSER (full Gallery page: folders, media grid and viewer) ===== -->
-<div id="folder-modal" class="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-title">
-  <div class="folder-modal-box">
-    <div class="folder-modal-head">
-      <strong id="folder-title">Browse folders &amp; images</strong>
-      <button id="close-folder" type="button">Close</button>
-    </div>
-    <iframe id="gallery-picker" class="gallery-picker" title="Browse folders and images"></iframe>
-    <div class="folder-modal-foot" id="gallery-foot" hidden>
-      <span class="path" id="gallery-current">Gallery</span>
-      <button id="use-folder" type="button" class="use">Use this folder</button>
-    </div>
-  </div>
-</div>
-
 <script>
 // ─── State ────────────────────────────────────────────────────────────────────
 const API = '/betacaption/api';
@@ -357,7 +354,7 @@ let batchPollTimer = null;
 let lastBatchEventId = 0;
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
-const folderInput   = document.getElementById('folder-input');
+const folderDisplay = document.getElementById('folder-display');
 const lmUrl         = document.getElementById('lm-url');
 const modelSelect   = document.getElementById('model-select');
 const promptInput   = document.getElementById('prompt-input');
@@ -393,16 +390,15 @@ const pagination    = document.getElementById('pagination');
 const prevPage      = document.getElementById('prev-page');
 const nextPage      = document.getElementById('next-page');
 const pageInfo      = document.getElementById('page-info');
+const captionBrowser= document.getElementById('caption-browser');
 
 // Keep caption options shared with Gallery's one-click and bulk caption actions.
 lmUrl.value = localStorage.getItem('captionLmStudioUrl') || lmUrl.value;
 promptInput.value = localStorage.getItem('captionPrompt') || promptInput.value;
 triggerTag.value = localStorage.getItem('captionTriggerTag') || '';
-folderInput.value = localStorage.getItem('captioningFolderPath') || '';
 lmUrl.addEventListener('change', () => localStorage.setItem('captionLmStudioUrl', lmUrl.value.trim()));
 promptInput.addEventListener('change', () => localStorage.setItem('captionPrompt', promptInput.value));
 triggerTag.addEventListener('change', () => localStorage.setItem('captionTriggerTag', triggerTag.value.trim()));
-folderInput.addEventListener('change', () => localStorage.setItem('captioningFolderPath', folderInput.value.trim()));
 modelSelect.addEventListener('change', () => localStorage.setItem('captionModel', modelSelect.value));
 
 function readPresets() {
@@ -504,8 +500,6 @@ function enableBatch() {
 }
 
 // ─── Load folder ──────────────────────────────────────────────────────────────
-document.getElementById('btn-load').addEventListener('click', () => loadFolder(folderInput.value.trim()));
-
 const explorerRail = document.getElementById('explorer-rail');
 
 /** Live on-disk explorer: breadcrumb + subfolders with media counts. */
@@ -565,20 +559,18 @@ async function renderExplorer() {
   }
 }
 
-async function loadFolder(path) {
-  if (!path) return;
-  folderPath = path;
-  folderInput.value = path;
-  localStorage.setItem('captioningFolderPath', path);
+function updateFolderDisplay(path) {
+  if (folderDisplay) folderDisplay.textContent = path || 'No folder';
+}
+
+async function loadFolder() {
   page = 1; allImages = [];
-  renderExplorer();
   await fetchPage();
-  enableBatch();
 }
 
 async function fetchPage() {
   try {
-    const u = `${API}/images?folderPath=${encodeURIComponent(folderPath)}&page=${page}&limit=40`;
+    const u = `${API}/images?page=${page}&limit=40`;
     const r = await fetch(u);
     const d = await r.json();
     if (d.error) { alert(d.error); return; }
@@ -586,6 +578,12 @@ async function fetchPage() {
     totalPages = d.totalPages || 1;
     totalImages = d.total || images.length;
     allImages = images;
+    if (d.folderPath) {
+      folderPath = d.folderPath;
+      updateFolderDisplay(folderPath);
+      syncBrowserFolder(folderPath);
+      enableBatch();
+    }
     renderGrid();
     updatePagination();
   } catch(e) { alert('Failed to load images: ' + e.message); }
@@ -600,7 +598,7 @@ function renderGrid() {
 
   const tagged   = allImages.filter(i => i.hasCaption).length;
   const untagged = allImages.length - tagged;
-  gridStats.textContent = `${allImages.length} images • ${tagged} tagged • ${untagged} untagged`;
+  gridStats.textContent = `${folderPath || 'No folder'} • ${allImages.length} images • ${tagged} tagged • ${untagged} untagged`;
 
   // Clear and rebuild
   imageGrid.innerHTML = '';
@@ -802,8 +800,8 @@ async function pollBatch() {
     const d = await r.json();
     if (d.folderPath) {
       folderPath = d.folderPath;
-      folderInput.value = folderPath;
-      localStorage.setItem('captioningFolderPath', folderPath);
+      updateFolderDisplay(folderPath);
+      syncBrowserFolder(folderPath);
     }
     if (d.state === 'running' || d.state === 'cancelling') {
       setBatchUi(true);
@@ -908,22 +906,10 @@ nextPage.addEventListener('click', () => { if (page < totalPages) { page++; fetc
 // ─── Model select → enable batch ─────────────────────────────────────────────
 modelSelect.addEventListener('change', enableBatch);
 
-// ─── Folder browser (full Gallery plugin page) ───────────────────────────────
-// The real Gallery browser is embedded (folder navigation, media grid and the
-// image viewer), so choosing a folder here matches browsing in the Gallery
-// space. The footer reads the iframe's `album` URL parameter to know which
-// folder is open; the small picker stays as a fallback when the caption folder
-// lives outside the Gallery root.
-const folderModal = document.getElementById('folder-modal');
-const galleryPicker = document.getElementById('gallery-picker');
-const galleryFoot = document.getElementById('gallery-foot');
-const galleryCurrent = document.getElementById('gallery-current');
+// ─── Embedded Gallery browser sync ────────────────────────────────────────────
 const GALLERY_PAGE = '/api/plugins/betacaption/page/browser';
 const GALLERY_STATUS = '/betacaption/gallery/api/status';
 const trimPath = (p) => String(p || '').replace(/\/+$/, '');
-let browseMode = '';
-let browseRoot = '';
-let browseTimer = 0;
 
 async function galleryRoot() {
   try {
@@ -934,74 +920,22 @@ async function galleryRoot() {
   } catch (_) { return ''; }
 }
 
-function galleryAlbum() {
-  try {
-    const url = new URL(galleryPicker.contentWindow.location.href);
-    return url.searchParams.get('album') || '';
-  } catch (_) { return ''; }
-}
-
-function syncGalleryPath() {
-  if (browseMode !== 'gallery') return;
-  const album = galleryAlbum();
-  galleryCurrent.textContent = album ? `${browseRoot}/${album}` : browseRoot;
-}
-
-function closeFolderPicker() {
-  folderModal.classList.remove('open');
-  if (browseTimer) { clearInterval(browseTimer); browseTimer = 0; }
-}
-
-async function openFolders() {
-  const current = trimPath(folderInput.value);
-  // Start at the configured root that contains the current folder, so folder
-  // navigation can walk all the way up.
-  let root = current;
-  try {
-    const response = await fetch(`${API}/browse-roots`);
-    const data = await response.json();
-    const roots = (data.roots || []).map((p) => trimPath(p));
-    const match = roots
-      .filter((p) => current === p || current.startsWith(`${p}/`))
-      .sort((a, b) => b.length - a.length)[0];
-    if (match) root = match;
-  } catch (_) { /* default root is fine */ }
-
+/** Point the always-visible boilerplate browser at the current captioning folder
+    (relative to the Gallery root) so the two panes stay in sync. */
+async function syncBrowserFolder(path) {
+  if (!captionBrowser) return;
   const gallery = await galleryRoot();
+  const current = trimPath(path || folderPath);
   const insideGallery = gallery && (!current || current === gallery || current.startsWith(`${gallery}/`));
-  if (insideGallery) {
-    browseMode = 'gallery';
-    browseRoot = gallery;
-    const album = !current || current === gallery ? '' : current.slice(gallery.length + 1);
-    galleryPicker.src = `${GALLERY_PAGE}?album=${encodeURIComponent(album)}&embed=caption`;
-    galleryFoot.hidden = false;
-  } else {
-    browseMode = 'picker';
-    browseRoot = root;
-    const params = new URLSearchParams({ mode: 'folder' });
-    if (root) params.set('root', root);
-    galleryPicker.src = `/api/plugins/betacaption/page/picker?${params.toString()}&embed=caption`;
-    galleryFoot.hidden = true;
+  let album = '';
+  if (insideGallery && current && current !== gallery) {
+    album = current.slice(gallery.length + 1);
   }
-  folderModal.classList.add('open');
-  if (browseTimer) { clearInterval(browseTimer); browseTimer = 0; }
-  if (browseMode === 'gallery') {
-    syncGalleryPath();
-    browseTimer = setInterval(syncGalleryPath, 600);
-  }
-}
-
-function useGalleryFolder() {
-  if (browseMode !== 'gallery') return;
-  applyPickedFolder({ path: browseRoot, relative: galleryAlbum() });
-}
-function applyPickedFolder(data) {
-  const relative = String(data.relative || '').replace(/^\/+|\/+$/g, '');
-  const root = String(data.path || '').replace(/\/+$/, '');
-  const chosen = relative ? `${root}/${relative}` : root;
-  closeFolderPicker();
-  folderInput.value = chosen;
-  loadFolder(chosen).catch(error => alert(error.message));
+  const src = insideGallery
+    ? `${GALLERY_PAGE}?album=${encodeURIComponent(album)}&embed=caption`
+    : `${GALLERY_PAGE}?embed=caption`;
+  const absSrc = new URL(src, window.location.href).href;
+  if (captionBrowser.src !== absSrc) captionBrowser.src = src;
 }
 
 function handleBetaMedia(data) {
@@ -1040,46 +974,30 @@ function handleBetaMedia(data) {
     imgOverlay.classList.remove('hidden');
     imgName.textContent = file;
     imgDims.textContent = '';
+    activeImg.addEventListener('load', function onFallbackLoad() {
+      if (activeIdx === -1 && activeImg.naturalWidth) {
+        imgDims.textContent = `${activeImg.naturalWidth}×${activeImg.naturalHeight}`;
+      }
+    }, { once: true });
   }
 }
 
-document.getElementById('btn-browse').addEventListener('click', openFolders);
-document.getElementById('use-folder').addEventListener('click', useGalleryFolder);
-document.getElementById('close-folder').addEventListener('click', closeFolderPicker);
-folderModal.addEventListener('click', (event) => { if (event.target === folderModal) closeFolderPicker(); });
 window.addEventListener('message', (event) => {
   if (event.origin !== window.location.origin) return;
-  if (event.data?.type === 'sdcodex:pick') applyPickedFolder(event.data);
-  if (event.data?.type === 'sdcodex:pick-cancel') closeFolderPicker();
   if (event.data?.type === 'sdcodex:beta-media') handleBetaMedia(event.data);
-});
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && folderModal.classList.contains('open')) closeFolderPicker();
 });
 
 async function restorePageState() {
-  if (folderInput.value.trim()) {
-    await loadFolder(folderInput.value.trim());
-  } else {
-    // Land on the live disk explorer instead of an empty grid.
-    try {
-      const rr = await fetch(`${API}/browse-roots`);
-      const rd = await rr.json();
-      const roots = rd.roots || [];
-      const preferred = roots.find(p => p === '/data/downloads')
-        || roots.find(p => p === '/data')
-        || roots[0];
-      if (preferred) await loadFolder(preferred);
-    } catch (_) { /* leave the empty state */ }
-  }
+  // The captioning folder is resolved by the backend from the environment;
+  // just load the first page and adopt the folder it reports.
+  await loadFolder();
   try {
-    const storedFolder = localStorage.getItem('captioningFolderPath') || '';
     const r = await fetch(`${API}/batch/status?since=0`, { cache: 'no-store' });
     const d = await r.json();
     if (d.folderPath) {
-      folderPath = d.folderPath; folderInput.value = folderPath;
-      localStorage.setItem('captioningFolderPath', folderPath);
-      if (d.folderPath !== storedFolder) { page = 1; await fetchPage(); }
+      folderPath = d.folderPath;
+      updateFolderDisplay(folderPath);
+      syncBrowserFolder(folderPath);
     }
     if (d.state === 'running' || d.state === 'cancelling') {
       lastBatchEventId = 0; setBatchUi(true); progressWrap.classList.remove('hidden');
@@ -1094,11 +1012,7 @@ async function restorePageState() {
     }
   } catch (_) { /* backend may not have a batch yet */ }
 }
-void restorePageState().then(() => {
-  // Nothing on screen means the saved root is wrong/empty: open the shared
-  // Gallery browser immediately so the user can browse to real media.
-  if (!allImages.length) openFolders();
-});
+void restorePageState();
 </script>
 </body>
 </html>
