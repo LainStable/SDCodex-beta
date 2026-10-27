@@ -679,21 +679,6 @@ def pause_caption_batch():
         return jsonify({"ok": True, "state": "paused", "paused": True})
 
 
-@caption_bp.post("/batch/pause")
-def pause_caption_batch():
-    """Pause or resume a running batch (the task float's pause button)."""
-    with _batch_lock:
-        if _batch["state"] not in ("running", "cancelling"):
-            return jsonify({"ok": True, "state": _batch["state"], "paused": False})
-        if _batch["pause"]:
-            _batch["pause"] = False
-            _batch["state"] = "running"
-            return jsonify({"ok": True, "state": "running", "paused": False})
-        _batch["pause"] = True
-        _batch["state"] = "paused"
-        return jsonify({"ok": True, "state": "paused", "paused": True})
-
-
 @caption_bp.post("/batch/stop")
 def stop_caption_batch():
     with _batch_lock:

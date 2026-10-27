@@ -217,49 +217,10 @@ tailwind.config = {
 </div>
 
 <!-- ===== MAIN 2-COLUMN WORKSPACE ===== -->
-<main class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-y-3 overflow-visible">
+<main class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-y-3 overflow-visible">
 
-  <!-- ===== LEFT: embedded boilerplate browser ===== -->
-  <section class="w-full xl:w-auto min-h-[260px] xl:min-h-0 flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
-    <iframe id="caption-browser" title="Media browser"
-            src="/api/plugins/betacaption/page/browser?embed=caption"
-            class="w-full h-full border-0 bg-obsidian-lowest"></iframe>
-  </section>
-
-  <!-- HIDDEN: legacy ComfyCaption-style grid section.
-       It remains in the DOM because its JS (allImages, renderGrid, renderExplorer,
-       updatePagination, selectImage, the filter buttons and the batch flow) is
-       still the backbone of the captioning app. It is simply no longer shown;
-       the boilerplate browser above now provides the visible media grid. -->
-  <section id="legacy-grid-section" class="hidden w-full xl:w-auto min-h-[260px] max-h-[42vh] xl:max-h-none flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
-    <!-- Stats strip -->
-    <div class="shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-outline-variant/15 text-body-sm">
-      <span id="grid-stats" class="font-code-sm text-code-sm text-outline">No folder loaded</span>
-      <div class="flex items-center gap-1">
-        <button id="filter-all"     class="filter-btn sd-btn sd-btn-pill" aria-pressed="true">All</button>
-        <button id="filter-untagged" class="filter-btn sd-btn sd-btn-pill" aria-pressed="false">Untagged</button>
-        <button id="filter-tagged"   class="filter-btn sd-btn sd-btn-pill" aria-pressed="false">Tagged</button>
-      </div>
-    </div>
-    <!-- Live disk explorer -->
-    <div id="explorer-rail" class="explorer-rail" aria-label="Folders"></div>
-    <!-- Grid scroll area -->
-    <div id="image-grid" class="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-1.5 content-start">
-      <div id="grid-empty" class="col-span-2 flex flex-col items-center justify-center h-40 text-outline text-body-sm gap-2">
-        <span class="material-symbols-outlined text-[32px]">folder_open</span>
-        <span>Load a folder to begin</span>
-      </div>
-    </div>
-    <!-- Pagination -->
-    <div id="pagination" class="hidden shrink-0 flex items-center justify-between px-3 py-1.5 border-t border-outline-variant/20 text-body-sm">
-      <button id="prev-page" class="sd-btn sd-btn-sm">Prev</button>
-      <span id="page-info" class="font-code-sm text-code-sm text-outline"></span>
-      <button id="next-page" class="sd-btn sd-btn-sm">Next</button>
-    </div>
-  </section>
-
-  <!-- ===== RIGHT: active image + details + caption ===== -->
-  <section class="min-w-0 min-h-[520px] xl:min-h-0 xl:h-full flex flex-col xl:border-l border-outline-variant/20 overflow-hidden">
+  <!-- ===== LEFT: active image + details + caption ===== -->
+  <section class="min-w-0 min-h-[520px] xl:min-h-0 xl:h-full flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 overflow-hidden">
     <!-- Image viewer -->
     <div class="flex-1 min-h-0 relative bg-black/40 checkerboard flex items-center justify-center overflow-hidden">
       <img id="active-img" src="" alt="" class="max-w-full max-h-full object-contain hidden"/>
@@ -337,6 +298,45 @@ tailwind.config = {
       <textarea id="caption-editor" class="flex-1 w-full bg-transparent px-3 py-2 text-body-md text-on-surface resize-none focus:outline-none placeholder:text-outline/50" placeholder="Caption will appear here after generation, or type manually…"></textarea>
       <!-- Tag cloud extracted from caption -->
       <div id="tag-cloud" class="px-3 pb-2 flex flex-wrap gap-1 min-h-0"></div>
+    </div>
+  </section>
+
+  <!-- ===== RIGHT: embedded boilerplate browser ===== -->
+  <section class="w-full xl:w-auto min-h-[260px] xl:min-h-0 flex flex-col border-b xl:border-b-0 xl:border-l border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+    <iframe id="caption-browser" title="Media browser"
+            src="/api/plugins/betacaption/page/browser?embed=caption"
+            class="w-full h-full border-0 bg-obsidian-lowest"></iframe>
+  </section>
+
+  <!-- HIDDEN: legacy ComfyCaption-style grid section.
+       It remains in the DOM because its JS (allImages, renderGrid, renderExplorer,
+       updatePagination, selectImage, the filter buttons and the batch flow) is
+       still the backbone of the captioning app. It is simply no longer shown;
+       the boilerplate browser above now provides the visible media grid. -->
+  <section id="legacy-grid-section" class="hidden w-full xl:w-auto min-h-[260px] max-h-[42vh] xl:max-h-none flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+    <!-- Stats strip -->
+    <div class="shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-outline-variant/15 text-body-sm">
+      <span id="grid-stats" class="font-code-sm text-code-sm text-outline">No folder loaded</span>
+      <div class="flex items-center gap-1">
+        <button id="filter-all"     class="filter-btn sd-btn sd-btn-pill" aria-pressed="true">All</button>
+        <button id="filter-untagged" class="filter-btn sd-btn sd-btn-pill" aria-pressed="false">Untagged</button>
+        <button id="filter-tagged"   class="filter-btn sd-btn sd-btn-pill" aria-pressed="false">Tagged</button>
+      </div>
+    </div>
+    <!-- Live disk explorer -->
+    <div id="explorer-rail" class="explorer-rail" aria-label="Folders"></div>
+    <!-- Grid scroll area -->
+    <div id="image-grid" class="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-1.5 content-start">
+      <div id="grid-empty" class="col-span-2 flex flex-col items-center justify-center h-40 text-outline text-body-sm gap-2">
+        <span class="material-symbols-outlined text-[32px]">folder_open</span>
+        <span>Load a folder to begin</span>
+      </div>
+    </div>
+    <!-- Pagination -->
+    <div id="pagination" class="hidden shrink-0 flex items-center justify-between px-3 py-1.5 border-t border-outline-variant/20 text-body-sm">
+      <button id="prev-page" class="sd-btn sd-btn-sm">Prev</button>
+      <span id="page-info" class="font-code-sm text-code-sm text-outline"></span>
+      <button id="next-page" class="sd-btn sd-btn-sm">Next</button>
     </div>
   </section>
 </main>
