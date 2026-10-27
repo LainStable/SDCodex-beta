@@ -1,0 +1,3990 @@
+// FolderFrame
+// Features: directory-backed albums, HEIC/HEIF handling, shuffle slideshow,
+// auto-rescan, TV/photo-frame mode, local preferences, and recursive folder browsing.
+
+const settingsApi = window.FolderFrameSettings;
+const resilience = window.FolderFrameResilience;
+let scanSession = null, gridSession = null, viewerSession = null;
+let failedNavigation = null;
+let warningReturnFolder = null;
+let missingFolderRecovery = null;
+let emptyFolderNotice = false;
+const DIRECTORY_TIMEOUT = 15000, MEDIA_TIMEOUT = 30000;
+const GRID_BATCH_SIZE = 100, GRID_WINDOW_SIZE = 300;
+const SCAN_SIBLING_CONCURRENCY = 5; // Bounds simultaneous directory-listing requests during recursive "All Pics" scans.
+const IGNORE_SENTINELS = new Set(['folderframe.ignore', '.frameignore']);
+const IGNORED_DIRECTORY_NAMES = new Set([
+    '@eadir', '#recycle', '@recycle', '$recycle.bin', '.trash', '.trashes',
+    '.appledouble', '__macosx', '.spotlight-v100', '.fseventsd', '.snapshot',
+    '.snapshots', 'system volume information', 'lost+found'
+]);
+function isIgnoredDirectoryName(name) {
+    const normalized = String(name || '').toLowerCase();
+    return IGNORED_DIRECTORY_NAMES.has(normalized) || normalized.startsWith('.trash-');
+}
+function isIgnoredFileName(name) {
+    const normalized = String(name || '').toLowerCase();
+    return normalized.startsWith('.') || normalized.startsWith('~$') ||
+        ['.tmp', '.part', '.partial', '.crdownload', '.download', '.bak', '.old']
+            .some(suffix => normalized.endsWith(suffix));
+}
+const NATIVE_VIEWER_IMAGE_CONCURRENCY = 2;
+const NATIVE_THUMBNAIL_IMAGE_CONCURRENCY = 12;
+const NATIVE_IMAGE_PRIORITY = Object.freeze({ grid: 0, album: 5, viewer: 10 });
+const nativeViewerImageQueue = resilience.createTaskQueue({ concurrency: NATIVE_VIEWER_IMAGE_CONCURRENCY });
+const nativeThumbnailImageQueue = resilience.createTaskQueue({ concurrency: NATIVE_THUMBNAIL_IMAGE_CONCURRENCY });
+const videoThumbnailQueue = resilience.createTaskQueue({ concurrency: 2 });
+const VIDEO_THUMBNAIL_TIMEOUT = 8000;
+let gridVirtualizer = null;
+function clearMediaSource(element) {
+    if (element.removeAttribute) element.removeAttribute('src');
+    else element.src = '';
+    element.load?.();
+}
+
+function stopViewerSession() {
+    if (!viewerSession) return;
+    viewerSession.controller.abort();
+    clearTimeout(viewerSession.timer);
+    viewerSession = null;
+}
+/* Toggle the floating "hovering panel" viewer look (captioning-modal style):
+   dims the page behind and floats the media as a centered card. Driven off the
+   grid/viewer state so there is a single source of truth. */
+function syncViewerModal() {
+    if (typeof wrapper === 'undefined' || !wrapper) return;
+    wrapper.classList.toggle('viewer-open', !isGridViewActive);
+    if (isGridViewActive) setInfoPanel(false);
+}
+function stopGridSession() {
+    stopAlbumPreviews();
+    if (!gridSession) return;
+    gridSession.controller.abort();
+    gridSession.observer?.disconnect();
+    gridSession.cleanups.forEach(cleanup => cleanup());
+    gridSession = null;
+    gridVirtualizer = null;
+}
+function startGridSession() {
+    stopGridSession();
+    gridSession = { controller: new AbortController(), cleanups: new Set(), observer: null,
+        folder: currentFolder, mode: galleryViewMode, appendTiles: null };
+    return gridSession;
+}
+
+let galleryConfig;
+let activeSource;
+let preferenceKey;
+let rememberPreferences = true;
+let controlsEnabled = true;
+let showDownloadButton = true;
+let showCopyButton = true;
+let swipeStart = null;
+let gridReturn = null;
+let albumPreviewSession = null;
+
+function stopAlbumPreviews() {
+    if (!albumPreviewSession) return;
+    albumPreviewSession.controller.abort();
+    albumPreviewSession.items?.forEach((controller, item) => { controller.abort(); item.coverImage && (item.coverImage.src = ''); });
+    albumPreviewSession.observer?.disconnect();
+    albumPreviewSession.queue.length = 0;
+    albumPreviewSession = null;
+}
+
+function startAlbumPreviews() {
+    stopAlbumPreviews();
+    const session = { controller: new AbortController(), observer: null, queue: [], active: 0, items: new Map(), listingCache: new Map() };
+    albumPreviewSession = session;
+    const pump = () => {
+        if (session.controller.signal.aborted) return;
+        while (session.active < 3 && session.queue.length) {
+            const { item, folder, controller } = session.queue.shift();
+            if (controller.signal.aborted) continue;
+            session.active++;
+            loadAlbumPreview(item, folder, controller.signal)
+                .finally(() => { session.active--; pump(); });
+        }
+    };
+    const enqueue = item => {
+        if (session.items.has(item)) return;
+        const controller = new AbortController();
+        session.items.set(item, controller);
+        session.queue.push({ item, folder: item.dataset.albumFolder, controller }); pump();
+    };
+    if ('IntersectionObserver' in window) {
+        session.observer = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                if (entry.isIntersecting) enqueue(entry.target);
+                else {
+                    session.items.get(entry.target)?.abort(); session.items.delete(entry.target);
+                    if (entry.target.coverImage) entry.target.coverImage.src = '';
+                    entry.target.classList.remove('has-album-cover');
+                }
+            }
+        }, { root: gridViewContainer, rootMargin: '300px' });
+    }
+    return item => session.observer ? session.observer.observe(item) : enqueue(item);
+}
+
+function queueNativeImageSource(element, source, signal, { priority = 0, onStart = null } = {}) {
+    const queue = priority === NATIVE_IMAGE_PRIORITY.viewer ? nativeViewerImageQueue : nativeThumbnailImageQueue;
+    const operation = queue.schedule(() => new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(resilience.abortError()); return; }
+        const token = Symbol('native-image-load');
+        const originalLoad = element.onload;
+        const originalError = element.onerror;
+        let settled = false;
+        element.folderFrameDecodeToken = token;
+        const restore = () => {
+            if (element.folderFrameDecodeToken !== token) return;
+            element.folderFrameDecodeToken = null;
+            element.onload = originalLoad;
+            element.onerror = originalError;
+        };
+        const finish = (handler, event) => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener('abort', cancel);
+            restore();
+            let result;
+            try { result = handler?.call(element, event); }
+            catch (error) { console.error('FolderFrame: image load callback failed.', error); }
+            resolve();
+            return result;
+        };
+        const cancel = () => {
+            if (settled) return;
+            settled = true;
+            restore();
+            reject(resilience.abortError());
+        };
+        element.onload = event => finish(originalLoad, event);
+        element.onerror = event => finish(originalError, event);
+        signal?.addEventListener('abort', cancel, { once: true });
+        try {
+            onStart?.();
+            // Visibility is already gated by our observer/queue. Browser lazy
+            // loading can otherwise occupy every slot without starting a request.
+            element.loading = 'eager';
+            element.src = source;
+        } catch (error) {
+            signal?.removeEventListener('abort', cancel);
+            restore();
+            reject(error);
+        }
+    }), { signal, priority });
+    // Most DOM callers are event-driven rather than awaiting this operation.
+    // Attach a handler here so cancellation never becomes an unhandled rejection.
+    operation.catch(error => {
+        if (error?.name !== 'AbortError') console.warn('FolderFrame: native image load queue failed.', source, error);
+    });
+    return operation;
+}
+
+const ALBUM_COVER_MAX_DEPTH = 4;
+function queueVideoThumbnail(element, source, signal) {
+    const operation = videoThumbnailQueue.schedule(() => new Promise((resolve, reject) => {
+        if (signal.aborted) { reject(resilience.abortError()); return; }
+        const loaded = element.onloadeddata, failed = element.onerror;
+        let settled = false, timer;
+        const finish = (error = false, aborted = false) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            signal.removeEventListener('abort', cancel);
+            element.onloadeddata = loaded;
+            element.onerror = failed;
+            if (error || aborted) clearMediaSource(element);
+            if (aborted) reject(resilience.abortError());
+            else {
+                element.preload = 'metadata';
+                try { (error ? failed : loaded)?.call(element); }
+                finally { resolve(); }
+            }
+        };
+        const cancel = () => finish(false, true);
+        element.onloadeddata = () => finish();
+        element.onerror = () => finish(true);
+        signal.addEventListener('abort', cancel, { once: true });
+        timer = setTimeout(() => finish(true), VIDEO_THUMBNAIL_TIMEOUT);
+        // Metadata alone need not produce a visible frame. Limit frame requests
+        // separately from images, and abort them when the tile leaves the margin.
+        element.preload = 'auto';
+        element.src = source;
+    }), { signal });
+    operation.catch(error => {
+        if (error.name !== 'AbortError') console.warn('FolderFrame: video preview failed.', error);
+    });
+    return operation;
+}
+
+const ALBUM_COVER_MAX_LISTINGS = 12;
+async function findAlbumCover(folder, signal) {
+    const queue = [{ folder, depth: 0 }];
+    const visited = new Set();
+    let listingsChecked = 0, sawMedia = false, searchIncomplete = false;
+    // Captured once, from the album's own top-level listing (depth 0), which the
+    // cover search already fetches as its very first candidate. This reuses that
+    // existing request instead of issuing a new one just to count items.
+    let directCount = null;
+    while (queue.length && listingsChecked < ALBUM_COVER_MAX_LISTINGS) {
+        if (signal.aborted) throw resilience.abortError();
+        const candidate = queue.shift();
+        if (visited.has(candidate.folder)) continue;
+        visited.add(candidate.folder); listingsChecked++;
+        let listing = albumPreviewSession?.listingCache.get(candidate.folder);
+        if (!listing) {
+            listing = await scanDirectory(candidate.folder, { signal });
+            if (albumPreviewSession && !signal.aborted) albumPreviewSession.listingCache.set(candidate.folder, listing);
+        }
+        // A sentinel on the album itself hides that album. A sentinel found
+        // deeper during cover discovery excludes only that descendant; keep
+        // searching sibling folders for a usable cover.
+        if (listing.ignored) {
+            if (candidate.depth === 0) return { file: null, confirmedEmpty: true, directCount, ignored: true };
+            continue;
+        }
+        if (candidate.depth === 0 && directCount === null) {
+            directCount = {
+                files: listing.filePaths.length,
+                folders: listing.folderNames.length,
+                hasVideo: listing.filePaths.some(isVideoFile)
+            };
+        }
+        const file = listing.filePaths.find(isImageFile);
+        if (file) return { file, confirmedEmpty: false, directCount };
+        if (listing.filePaths.some(isMediaFile)) sawMedia = true;
+        if (candidate.depth < ALBUM_COVER_MAX_DEPTH) {
+            listing.folderNames.forEach(name => queue.push({
+                folder: candidate.folder ? `${candidate.folder}/${name}` : name,
+                depth: candidate.depth + 1
+            }));
+        } else if (listing.folderNames.length) searchIncomplete = true;
+    }
+    if (queue.length) searchIncomplete = true;
+    return { file: null, confirmedEmpty: !sawMedia && !searchIncomplete, directCount };
+}
+
+function albumSubtitleText(counts) {
+    if (!counts) return 'Open album';
+    if (counts.files > 0) {
+        const noun = counts.hasVideo ? 'item' : 'photo';
+        return `${counts.files} ${noun}${counts.files === 1 ? '' : 's'}`;
+    }
+    if (counts.folders > 0) return `${counts.folders} album${counts.folders === 1 ? '' : 's'}`;
+    return 'Open album';
+}
+
+async function loadAlbumPreview(item, folder, signal) {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal.addEventListener('abort', cancel, { once: true });
+    let timeout;
+    let preview;
+    const fallback = () => {
+        if (signal.aborted) return;
+        if (preview) preview.hidden = true;
+        item.classList.remove('has-album-cover');
+    };
+    try {
+        if (signal.aborted) return;
+        const result = await findAlbumCover(folder, controller.signal);
+        if (!result.file && result.confirmedEmpty) {
+            item.hidden = true;
+            item.dataset.emptyAlbum = 'true';
+            if (result.ignored) item.dataset.ignoredAlbum = 'true';
+            return;
+        }
+        if (result.directCount && !signal.aborted) {
+            item.dataset.directFiles = String(result.directCount.files);
+            item.dataset.directFolders = String(result.directCount.folders);
+            const subtitleEl = item.querySelector('.album-subtitle');
+            if (subtitleEl) subtitleEl.textContent = albumSubtitleText(result.directCount);
+        }
+        const file = result.file;
+        if (!file || signal.aborted || controller.signal.aborted) return;
+        const generatedUrl = persistentThumbnailUrl(file);
+        if (isHeicFile(file) && !generatedUrl) return;
+        let url = generatedUrl || file;
+        if (signal.aborted || controller.signal.aborted) return;
+        preview = item.coverImage || document.createElement('img');
+        item.coverImage = preview;
+        preview.className = 'album-cover';
+        preview.alt = '';
+        preview.draggable = false;
+        preview.hidden = true;
+        preview.decoding = 'async';
+        let previewLoadController = null;
+        const loadPreview = source => {
+            previewLoadController?.abort();
+            previewLoadController = new AbortController();
+            const cancel = () => previewLoadController?.abort();
+            signal.addEventListener('abort', cancel, { once: true });
+            const operation = queueNativeImageSource(preview, source, previewLoadController.signal, {
+                priority: NATIVE_IMAGE_PRIORITY.album,
+                onStart: () => {
+                    clearTimeout(timeout);
+                    timeout = setTimeout(() => {
+                        fallback();
+                        previewLoadController?.abort();
+                    }, MEDIA_TIMEOUT);
+                }
+            });
+            operation.then(
+                () => signal.removeEventListener('abort', cancel),
+                () => signal.removeEventListener('abort', cancel)
+            );
+            return operation;
+        };
+        preview.onload = () => {
+            if (signal.aborted) return;
+            clearTimeout(timeout);
+            preview.hidden = false;
+            item.classList.add('has-album-cover');
+        };
+        preview.onerror = () => {
+            clearTimeout(timeout);
+            if (generatedUrl && !isHeicFile(file) && preview.src === generatedUrl && !signal.aborted) {
+                url = file;
+                loadPreview(url);
+                return;
+            }
+            fallback();
+        };
+        signal.addEventListener('abort', () => clearTimeout(timeout), { once: true });
+        if (!preview.parentNode) item.appendChild(preview);
+        loadPreview(url);
+    } catch (error) {
+        // An unavailable preview never prevents opening the album.
+        fallback();
+    } finally {
+        signal.removeEventListener('abort', cancel);
+    }
+}
+let refreshInterval = 60; // Seconds; resolved per index/embed profile.
+
+let mediaFiles = [];
+let subfolders = [];
+let currentFolder = '';
+let currentIndex = 0;
+let zoom = 1.0, panX = 0, panY = 0, imageRotation = 0;
+let isDragging = false, startX = 0, startY = 0, startPanX = 0, startPanY = 0;
+let isPinching = false, initialDist = 0, initialZoom = 1.0, initialMidX = 0, initialMidY = 0, initialPanX = 0, initialPanY = 0;
+let slideshowPlaying = false, slideshowTimer = null, slideshowInterval = 5, slideProgress = 0;
+let slideshowAnimationFrame = null, slideshowStartedAt = 0;
+let uiVisible = true, idleTimer = null, imageMode = 'fit', isGridViewActive = true;
+let shuffleEnabled = false, autoRefreshEnabled = true, tvModeEnabled = false;
+let galleryViewMode = 'folders'; // 'folders' or 'all'
+let starFilterMode = false; // When true, the grid shows only starred media, anywhere in the source.
+let sortMode = 'filename';
+const GRID_DENSITY_PX = { compact: 130, comfortable: 180, spacious: 240 };
+let gridDensity = 'comfortable';
+let gridTileMinPx = GRID_DENSITY_PX.comfortable;
+function applyGridDensity(density) {
+    gridDensity = GRID_DENSITY_PX[density] ? density : 'comfortable';
+    gridTileMinPx = GRID_DENSITY_PX[gridDensity];
+    document.documentElement?.style.setProperty('--grid-tile-min', gridTileMinPx + 'px');
+}
+const modifiedDateCache = new Map();
+const DATE_CACHE_TTL = 24 * 60 * 60 * 1000;
+const DATE_CACHE_LIMIT = 2000;
+let dateCacheKey = null;
+let scanManifest = null, scanManifestKey = null;
+const SCAN_MANIFEST_VERSION = 2;
+const SCAN_MANIFEST_DIRECTORY_LIMIT = 5000;
+const PERSISTENT_MANIFEST_VERSION = 1;
+let persistentManifestState = null;
+const persistentThumbnailUrls = new Map();
+let manifestFailureNotice = false;
+
+function isManifestOnlySource() {
+    return activeSource?.discoveryMode === 'manifest';
+}
+
+function usesPublishedManifest() {
+    return activeSource?.discoveryMode !== 'directory' && Boolean(activeSource?.manifestUrl);
+}
+
+// ── Remote Immich sources ───────────────────────────────────────────────────
+// An Immich server is advertised by the backend as a FolderFrame source whose
+// URL lives under /betacaption/gallery/api/immich/<id>/, so everything below only needs the
+// server id from the active source to talk to the right endpoints.
+function immichSourceId(source = activeSource) {
+    const match = /\/gallery\/api\/immich\/([A-Za-z0-9_-]+)\//.exec(source?.url || '');
+    return match ? match[1] : '';
+}
+
+function isRemoteSource(source = activeSource) {
+    return Boolean(immichSourceId(source));
+}
+
+function immichOriginalUrl(filepath) {
+    const sid = immichSourceId();
+    if (!sid) return null;
+    const rel = infoRelPath(filepath);
+    if (!rel.file) return null;
+    const album = rel.folder ? encodeURIComponent(rel.folder) + '/' : '';
+    return `/betacaption/gallery/api/immich/${sid}/original/${album}${encodeURIComponent(rel.file)}`;
+}
+
+// The core sidebar lists plugin pages, so the source switcher lives here: a
+// rail of every configured source (local disk plus one entry per Immich
+// server) named by the label set in Gallery → Settings.
+// ── Core theme bridge ───────────────────────────────────────────────
+// The gallery is embedded in the SDCodex shell as an iframe, so it cannot
+// inherit the app's CSS custom properties. The core posts its live palette
+// (CSS variable values) and we re-declare the tokens this sheet consumes.
+function rgbChannels(value, alpha) {
+    const parts = String(value || '').trim().split(/\s+/);
+    if (parts.length !== 3 || !parts.every(part => /^\d+$/.test(part))) return '';
+    return alpha == null ? `rgb(${parts.join(' ')})` : `rgba(${parts.join(',')},${alpha})`;
+}
+
+function applyAppTheme(theme) {
+    if (!theme || !theme.vars) return;
+    const root = document.documentElement;
+    const vars = theme.vars;
+    const mode = theme.mode === 'light' ? 'light' : 'dark';
+    root.dataset.theme = mode;
+    root.style.colorScheme = mode;
+    const set = (name, value) => { if (value) root.style.setProperty(name, value); };
+    set('--bg', rgbChannels(vars.bg));
+    set('--card-bg', rgbChannels(vars.card));
+    set('--text', rgbChannels(vars.ink));
+    set('--text-secondary', rgbChannels(vars.inkMuted));
+    set('--border', rgbChannels(vars.inkFaint, 0.4));
+    set('--primary', rgbChannels(vars.primary));
+    set('--info', rgbChannels(vars.secondary));
+    // Re-apply the FolderFrame remap values that depend on --border/--text.
+    set('--ff-glow', mode === 'dark' ? 'rgba(255,255,255,.10)' : 'rgba(128,128,135,.16)');
+    set('--ff-glow-hover', mode === 'dark' ? 'rgba(255,255,255,.22)' : 'rgba(128,128,135,.30)');
+}
+
+window.addEventListener('message', (event) => {
+    if (event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (data && data.type === 'sdcodex:theme') applyAppTheme(data.theme);
+    if (data && data.type === 'sdcodex:set-source' && data.sourceId) {
+        const source = (galleryConfig?.sources || []).find(s => s.id === data.sourceId);
+        if (source && source.id !== activeSource?.id) {
+            const url = new URL(location.href);
+            url.searchParams.set('source', source.id);
+            url.searchParams.set('album', '');
+            location.assign(url.href);
+        }
+    }
+});
+
+function renderSourceRail() {
+    const rail = $('source-rail');
+    const list = $('source-rail-list');
+    if (!rail || !list) return;
+    const sources = galleryConfig?.sources || [];
+    try {
+        window.parent.postMessage({
+            type: 'sdcodex:gallery-sources',
+            activeSourceId: activeSource?.id,
+            sources: sources
+        }, window.location.origin);
+    } catch (e) {}
+    // In SDCodex, the outer sidebar hosts the sources rail; do not render it inside the iframe view.
+    const inIframe = Boolean(window.parent && window.parent !== window);
+    const show = !inIframe && sources.length >= 1;
+    document.body.classList.toggle('has-source-rail', show);
+    rail.hidden = !show;
+    if (!show) { list.replaceChildren(); return; }
+    list.replaceChildren();
+    sources.forEach(source => {
+        const sid = immichSourceId(source);
+        const active = source.id === activeSource?.id;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'source-rail-item' + (active ? ' is-active' : '');
+        button.setAttribute('aria-pressed', String(active));
+        button.title = `${source.label} — ${sid ? 'Immich server' : 'local disk'}`;
+        const name = document.createElement('span');
+        name.className = 'source-rail-name';
+        name.textContent = source.label;
+        const kind = document.createElement('span');
+        kind.className = 'source-rail-kind';
+        kind.textContent = sid ? 'Immich' : 'Local';
+        button.append(name, kind);
+        button.addEventListener('click', () => {
+            if (active) return;
+            const url = new URL(location.href);
+            url.searchParams.set('source', source.id);
+            url.searchParams.set('album', '');
+            location.assign(url.href);
+        });
+        list.appendChild(button);
+    });
+}
+
+function persistentManifestError(message, cause = null) {
+    const error = new Error(message);
+    error.name = 'PersistentManifestError';
+    error.code = 'PERSISTENT_MANIFEST_INVALID';
+    if (cause) error.cause = cause;
+    return error;
+}
+
+function isPersistentManifestError(error) {
+    return error?.name === 'PersistentManifestError' || error?.code === 'PERSISTENT_MANIFEST_INVALID';
+}
+
+function cacheBustedManifestUrl(url, token) {
+    if (!token) return url;
+    const requestUrl = new URL(url);
+    requestUrl.searchParams.set('ff_refresh', token);
+    return requestUrl.href;
+}
+
+function resetPersistentManifest({ cacheBust = false } = {}) {
+    persistentManifestState = usesPublishedManifest()
+        ? { key: activeSource.manifestUrl, promise: null, index: null, unavailable: false, error: null,
+            cacheBustToken: cacheBust ? `${Date.now()}-${Math.random().toString(36).slice(2)}` : null, chunks: new Map() }
+        : null;
+    persistentThumbnailUrls.clear();
+}
+
+function safeManifestPath(value, { allowEmpty = false } = {}) {
+    if (typeof value !== 'string' || /[\\\x00-\x1f]/.test(value)) return null;
+    const parts = value.split('/').filter(Boolean);
+    if ((!allowEmpty && !parts.length) || parts.some(part => part === '.' || part === '..')) return null;
+    return parts.join('/');
+}
+
+function manifestAssetUrl(relative) {
+    if (!activeSource.thumbnailUrl) return null;
+    const path = safeManifestPath(relative);
+    if (!path) return null;
+    try {
+        return new URL(path.split('/').map(encodeURIComponent).join('/'), activeSource.thumbnailUrl).href;
+    } catch { return null; }
+}
+
+function persistentThumbnailUrl(file) {
+    return persistentThumbnailUrls.get(file) || settingsApi.thumbnailUrl(activeSource, file);
+}
+
+function validateManifestRecord(record, expectedPath) {
+    if (!record || typeof record !== 'object' || record.path !== expectedPath ||
+        !Array.isArray(record.files) || !Array.isArray(record.folders)) return null;
+    const folders = [];
+    for (const name of record.folders) {
+        if (typeof name !== 'string' || !name || /[\/\\\x00-\x1f]/.test(name) || ['.', '..'].includes(name)) return null;
+        if (isIgnoredDirectoryName(name)) continue;
+        folders.push(name);
+    }
+    const files = [];
+    for (const entry of record.files) {
+        const path = safeManifestPath(entry?.path);
+        if (!path || parentFolder(path) !== expectedPath || !isMediaFile(path)) return null;
+        if (isIgnoredFileName(path.split('/').pop()) || path.split('/').some(isIgnoredDirectoryName)) continue;
+        files.push({ ...entry, path });
+    }
+    return { files, folders };
+}
+
+function listingFromManifest(record, expectedPath) {
+    const valid = validateManifestRecord(record, expectedPath);
+    if (!valid) return null;
+    loadDateCache();
+    const now = Date.now();
+    const filePaths = valid.files.map(entry => {
+        const name = entry.path.split('/').pop();
+        const folder = parentFolder(entry.path);
+        const file = mediaUrlFor(name, folder);
+        modifiedDateCache.set(file, {
+            date: Number.isFinite(entry.mtime) ? entry.mtime : null,
+            size: Number.isFinite(entry.size) ? entry.size : null,
+            checked: now
+        });
+        const thumbnail = entry.thumbnailPath ? manifestAssetUrl(entry.thumbnailPath) : null;
+        if (thumbnail) persistentThumbnailUrls.set(file, thumbnail);
+        return file;
+    });
+    return { filePaths, folderNames: [...valid.folders] };
+}
+
+async function ensurePersistentManifest(signal) {
+    if (!usesPublishedManifest()) return null;
+    if (!persistentManifestState || persistentManifestState.key !== activeSource.manifestUrl) resetPersistentManifest();
+    const state = persistentManifestState;
+    if (state.unavailable) {
+        if (isManifestOnlySource()) throw state.error || persistentManifestError('The published media index is unavailable.');
+        return null;
+    }
+    if (state.index) return state.index;
+    if (!state.promise) {
+        const requestUrl = cacheBustedManifestUrl(activeSource.manifestUrl, state.cacheBustToken);
+        state.promise = resilience.request(requestUrl, {
+            signal, timeout: DIRECTORY_TIMEOUT, cache: 'no-store', body: 'json'
+        }).then(index => {
+            if (!index || index.version !== PERSISTENT_MANIFEST_VERSION ||
+                !index.root || typeof index.root !== 'object' ||
+                !index.chunks || typeof index.chunks !== 'object' || Array.isArray(index.chunks) ||
+                !validateManifestRecord(index.root, '')) {
+                throw persistentManifestError('The published media index has an unsupported or invalid root record.');
+            }
+            state.index = index;
+            console.info(`FolderFrame: loaded persistent media index${index.generatedAt ? ` from ${index.generatedAt}` : ''}.`);
+            if (Array.isArray(index.errors) && index.errors.length) {
+                console.warn(`FolderFrame: persistent media index reports ${index.errors.length} unreadable paths.`);
+            }
+            return index;
+        }).catch(error => {
+            state.promise = null;
+            if (signal?.aborted || error?.name === 'AbortError') throw error;
+            const failure = isPersistentManifestError(error)
+                ? error
+                : persistentManifestError('The published media index could not be loaded.', error);
+            // Remember the failure for this gallery scan so a missing index is
+            // not requested again for every descendant directory.
+            state.unavailable = true;
+            state.error = failure;
+            if (isManifestOnlySource()) {
+                console.warn('FolderFrame: required published media index unavailable.', error);
+                throw failure;
+            }
+            console.warn('FolderFrame: persistent media index unavailable; scanning directory listings directly.', error);
+            return null;
+        });
+    }
+    return state.promise;
+}
+
+async function loadPersistentChunk(topFolder, signal) {
+    const index = await ensurePersistentManifest(signal);
+    if (!index) return null;
+    const descriptor = index.chunks[topFolder];
+    if (!descriptor || typeof descriptor.file !== 'string') {
+        if (isManifestOnlySource()) throw persistentManifestError(`The published media index has no chunk for “${topFolder}”.`);
+        return null;
+    }
+    const state = persistentManifestState;
+    if (state.chunks.has(topFolder)) return state.chunks.get(topFolder);
+    const promise = (async () => {
+        try {
+            const base = new URL('.', activeSource.manifestUrl);
+            const chunkUrl = new URL(descriptor.file, base);
+            if (chunkUrl.origin !== base.origin || !chunkUrl.pathname.startsWith(base.pathname) ||
+                chunkUrl.search || chunkUrl.hash) throw new Error('Unsafe persistent manifest chunk path');
+            // Chunk ownership follows the active gallery scan, not an individual
+            // album-cover observer that may scroll offscreen during the request.
+            const ownerSignal = scanSession?.signal || signal;
+            const requestUrl = cacheBustedManifestUrl(chunkUrl.href, state.cacheBustToken);
+            const chunk = await resilience.request(requestUrl, {
+                signal: ownerSignal, timeout: DIRECTORY_TIMEOUT, cache: 'no-store', body: 'json'
+            });
+            if (!chunk || chunk.version !== PERSISTENT_MANIFEST_VERSION || chunk.root !== topFolder ||
+                !chunk.directories || typeof chunk.directories !== 'object' || Array.isArray(chunk.directories)) {
+                throw new Error('Invalid persistent manifest chunk');
+            }
+            return chunk;
+        } catch (error) {
+            if (scanSession?.signal?.aborted || (!scanSession && signal?.aborted) || error?.name === 'AbortError') {
+                state.chunks.delete(topFolder);
+                throw error;
+            }
+            if (isManifestOnlySource()) {
+                state.chunks.delete(topFolder);
+                throw (isPersistentManifestError(error)
+                    ? error
+                    : persistentManifestError(`The published media index chunk for “${topFolder}” is unavailable or invalid.`, error));
+            }
+            // Keep the resolved null in the chunk cache for this scan so each
+            // descendant falls back directly without redownloading a bad chunk.
+            console.warn(`FolderFrame: media index chunk for “${topFolder}” is unavailable; scanning that subtree directly.`, error);
+            return null;
+        }
+    })();
+    state.chunks.set(topFolder, promise);
+    return promise;
+}
+
+async function persistentDirectoryListing(folder, signal) {
+    const normalized = safeManifestPath(folder, { allowEmpty: true });
+    if (normalized === null) return null;
+    const index = await ensurePersistentManifest(signal);
+    if (!index) return null;
+    if (!normalized) {
+        const listing = listingFromManifest(index.root, '');
+        if (!listing && isManifestOnlySource()) {
+            throw persistentManifestError('The published media index root record is invalid.');
+        }
+        if (!listing) console.warn('FolderFrame: persistent media index root is invalid; scanning the source directly.');
+        return listing;
+    }
+    const topFolder = normalized.split('/')[0];
+    const chunk = await loadPersistentChunk(topFolder, signal);
+    if (!chunk) return null;
+    const listing = listingFromManifest(chunk.directories[normalized], normalized);
+    if (!listing && isManifestOnlySource()) {
+        throw persistentManifestError(`The published media index has no valid record for “${normalized}”.`);
+    }
+    if (!listing) console.warn(`FolderFrame: persistent media index has no valid record for “${normalized}”; scanning that directory directly.`);
+    return listing;
+}
+
+function getScanManifest() {
+    const key = `folderframe.scan-manifest:v${SCAN_MANIFEST_VERSION}:${galleryConfig.baseUrl}:${activeSource.id}:${activeSource.url}`;
+    if (scanManifestKey === key && scanManifest) return scanManifest;
+    scanManifestKey = key;
+    scanManifest = { version: SCAN_MANIFEST_VERSION, directories: {} };
+    try {
+        const stored = JSON.parse(localStorage.getItem(key) || 'null');
+        if (stored?.version === SCAN_MANIFEST_VERSION && stored.directories && typeof stored.directories === 'object') {
+            scanManifest = stored;
+        }
+    } catch (error) {
+        // Invalid or unavailable browser storage falls back to normal full scans.
+    }
+    return scanManifest;
+}
+
+function saveScanManifest() {
+    if (!activeSource.scanCache || !scanManifestKey || !scanManifest) return;
+    try {
+        const entries = Object.entries(scanManifest.directories)
+            .sort((a, b) => (b[1].checked || 0) - (a[1].checked || 0))
+            .slice(0, SCAN_MANIFEST_DIRECTORY_LIMIT);
+        scanManifest.directories = Object.fromEntries(entries);
+        localStorage.setItem(scanManifestKey, JSON.stringify(scanManifest));
+    } catch (error) {
+        // Storage quotas are optional optimization failures, never gallery failures.
+    }
+}
+
+async function directoryModifiedTime(url, signal) {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(() => controller.abort(), DIRECTORY_TIMEOUT);
+    try {
+        const response = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+        if (!response.ok) return null;
+        const value = response.headers?.get('Last-Modified');
+        const parsed = value ? Date.parse(value) : NaN;
+        return Number.isFinite(parsed) ? parsed : null;
+    } catch (error) {
+        if (signal?.aborted) throw resilience.abortError();
+        return null;
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
+    }
+}
+
+function trimDateCache(now = Date.now()) {
+    for (const [file, entry] of modifiedDateCache) {
+        if (!entry || !Number.isFinite(entry.checked) || entry.checked > now ||
+            now - entry.checked >= DATE_CACHE_TTL ||
+            (entry.date !== null && !Number.isFinite(entry.date))) modifiedDateCache.delete(file);
+    }
+    const oldest = [...modifiedDateCache].sort((a, b) => a[1].checked - b[1].checked);
+    for (const [file] of oldest.slice(0, Math.max(0, oldest.length - DATE_CACHE_LIMIT))) modifiedDateCache.delete(file);
+}
+
+function loadDateCache() {
+    const key = `folderframe.date-cache:v1:${galleryConfig.baseUrl}:${activeSource.id}:${activeSource.url}`;
+    if (dateCacheKey === key) return;
+    modifiedDateCache.clear();
+    dateCacheKey = key;
+    try {
+        const entries = JSON.parse(localStorage.getItem(key) || '[]');
+        if (!Array.isArray(entries)) return;
+        for (const entry of entries) {
+            if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') continue;
+            const [file, value] = entry;
+            // Cached metadata must never introduce URLs outside the selected source.
+            if (!file.startsWith(activeSource.url) || !value || typeof value !== 'object') continue;
+            modifiedDateCache.set(file, { date: value.date, size: value.size ?? null, checked: value.checked });
+        }
+        trimDateCache();
+    } catch (error) {
+        // Private browsing, corrupt JSON, and denied storage must not stop sorting.
+        modifiedDateCache.clear();
+    }
+}
+
+function saveDateCache() {
+    trimDateCache();
+    try {
+        localStorage.setItem(dateCacheKey, JSON.stringify([...modifiedDateCache]
+            .filter(([file]) => file.startsWith(activeSource.url))));
+    } catch (error) {
+        // Keep the bounded in-memory cache if storage is full or unavailable.
+    }
+}
+let autoRefreshTimer = null;
+let isScanning = false;
+// True while a long-running Optimize/Convert request is in flight. Auto-refresh
+// (timer + visibilitychange) is suspended then, otherwise a mid-run scan would
+// re-render the grid and hide the busy progress indicator even though the
+// conversion is still finishing in the background.
+let operationInFlight = false;
+// Whether this deployment exposes the Optimize endpoint. Defaults to true so
+// deployments that predate the capability endpoint keep the buttons usable;
+// loadOptimizeCapability() turns them off when the server says disabled.
+let optimizeCapable = true;
+// Whether this deployment exposes the Convert endpoint. The gallery backend
+// reports it through /optimize-status; defaults to true so the viewer never
+// hides Convert just because a status probe failed.
+let convertCapable = true;
+let scannedFolders = 0, scannedFiles = 0;
+let mediaLoadId = 0;
+let mediaFailed = false;
+let imageReady = false;
+let reclassifiedVideoActive = false;
+
+// Cache only object URLs we create ourselves. Normal HTTP URLs are never revoked.
+let specialImagePool = null;
+
+const $ = (id) => document.getElementById(id);
+const viewport = $('media-viewport');
+const container = $('media-container');
+const img = $('gallery-image');
+const video = $('gallery-video');
+const mediaTitle = $('media-title');
+const mediaIndex = $('media-index');
+const btnRotate = $('btn-rotate');
+const btnResetZoom = $('btn-reset-zoom');
+const btnImageMode = $('btn-image-mode');
+const btnDownload = $('btn-download');
+const btnCopyLink = $('btn-copy-link');
+const btnCopyFilename = $('btn-copy-filename');
+// --- SDCodex metadata details panel ---
+const btnInfo = $('btn-info');
+const infoPanel = $('info-panel');
+const btnInfoClose = $('btn-info-close');
+const infoFileName = $('info-file-name');
+const infoLoading = $('info-loading');
+const infoCaption = $('info-caption');
+const infoStats = $('info-stats');
+const infoExif = $('info-exif');
+const infoSdPrompt = $('info-sd-prompt');
+const infoSdNegative = $('info-sd-negative');
+const infoSdSetting = $('info-sd-setting');
+const infoError = $('info-error');
+const btnDownloadWorkflow = $('btn-download-workflow');
+const infoWorkflowSection = $('info-workflow-section');
+// "Caption this Image" (only present when the ComfyCaption plugin is installed).
+const btnCaptionThis = $('btn-caption-this');
+const captionThisLabel = btnCaptionThis ? $('caption-this-label') : null;
+const captionThisStatus = $('caption-this-status');
+const btnInfoDownloadWorkflow = $('btn-info-download-workflow');
+let currentMetadataFile = null; // { folder, file } of the image whose metadata is shown
+let galleryMetaSession = null;
+const btnViewerStar = $('btn-viewer-star');
+const btnOptimize = $('btn-optimize');
+const btnConvert = $('btn-convert');
+const btnInfoConvert = $('btn-info-convert');
+const btnViewerOptions = $('btn-viewer-options');
+const viewerOptionsMenu = $('viewer-options-menu');
+const imageModeText = $('image-mode-text');
+const btnPlayPause = $('btn-play-pause');
+const playIcon = btnPlayPause.querySelector('.play-icon');
+const pauseIcon = btnPlayPause.querySelector('.pause-icon');
+const slideshowText = $('slideshow-text');
+const selectInterval = $('select-interval');
+const progressBar = $('progress-bar');
+const progressContainer = $('progress-container');
+const btnFullscreen = $('btn-fullscreen');
+const navLeft = $('nav-left');
+const navRight = $('nav-right');
+const helpHint = $('help-hint');
+const warningOverlay = $('warning-overlay');
+const btnRetryWarning = $('btn-retry-warning');
+const wrapper = $('gallery-wrapper');
+const viewerBackdrop = $('viewer-backdrop');
+const gridViewContainer = $('grid-view-container');
+const thumbnailGrid = $('thumbnail-grid');
+const btnRefreshGrid = $('btn-refresh-grid');
+const btnShowGrid = $('btn-show-grid');
+const gridCount = $('grid-count');
+const gridPath = $('grid-path');
+const breadcrumb = $('breadcrumb');
+const btnShuffle = $('btn-shuffle');
+const btnAutoRefresh = $('btn-auto-refresh');
+const btnGridOptions = $('btn-grid-options');
+const gridOptionsMenu = $('grid-options-menu');
+const gridHeader = $('grid-header');
+const gridHeaderMain = gridHeader?.querySelector('.grid-header-main');
+const gridActions = gridHeader?.querySelector('.grid-actions');
+const gridDensitySlot = $('grid-density-slot');
+const gridDensityMenuSlot = $('grid-density-menu-slot');
+const gridViewModeSlot = $('grid-view-mode-slot');
+const gridViewModeMenuSlot = $('grid-view-mode-menu-slot');
+const gridSortSlot = $('grid-sort-slot');
+const gridSortMenuSlot = $('grid-sort-menu-slot');
+const gridRefreshSlot = $('grid-refresh-slot');
+const gridRefreshMenuSlot = $('grid-refresh-menu-slot');
+const btnViewMode = $('btn-view-mode');
+const gridStarsSlot = $('grid-stars-slot');
+const gridStarsMenuSlot = $('grid-stars-menu-slot');
+const btnStars = $('btn-stars');
+const gridOptimizeSlot = $('grid-optimize-slot');
+const gridOptimizeMenuSlot = $('grid-optimize-menu-slot');
+const btnOptimizeFolder = $('btn-optimize-folder');
+const gridConvertSlot = $('grid-convert-slot');
+const gridConvertMenuSlot = $('grid-convert-menu-slot');
+const btnConvertFolder = $('btn-convert-folder');
+const btnTvMode = $('btn-tv-mode');
+const scanStatus = $('scan-status');
+const videoErrorOverlay = $('video-error-overlay');
+const videoErrorText = $('video-error-text');
+const videoErrorFfmpeg = $('video-error-ffmpeg');
+const btnCloseVideoError = $('btn-close-video-error');
+
+window.addEventListener('DOMContentLoaded', async () => {
+    await loadConfiguration();
+    await loadOptimizeCapability();
+    await loadCaptionCapability();
+    setupEventListeners();
+    updateControlStates();
+    updateFullscreenButton();
+    const loaded = await loadGallery({ preserveView: false });
+    if (loaded !== false) updateFolderHistory(currentFolder, 'replace');
+    updateGalleryHeaderLayout();
+    startAutoRefreshTimer();
+
+    if (slideshowPlaying && mediaFiles.length > 0 && isGridViewActive) {
+        enterFullScreenViewer(currentIndex);
+    } else if (!mediaFiles.length) {
+        stopSlideshow();
+    }
+});
+
+window.addEventListener('popstate', async () => {
+    const folder = new URL(location.href).searchParams.get('album') || '';
+    if (folder !== currentFolder) await navigateToFolder(folder, { historyMode: 'none' });
+});
+
+window.addEventListener('beforeunload', () => {
+    scanSession?.abort(); stopViewerSession(); stopGridSession(); clearImageBlobCache();
+});
+
+function isHeicFile(path) { return /\.(heic|heif)$/i.test(path); }
+function isImageFile(path) { return /\.(jpe?g|png|webp|gif|avif|bmp|heic|heif)$/i.test(path); }
+function isVideoFile(path) { return /\.(mp4|mov|webm|m4v)$/i.test(path); }
+function isMediaFile(path) { return isImageFile(path) || isVideoFile(path); }
+
+// Starred media. Stars are a per-browser preference, stored by the media's
+// path relative to the active source (stable across refreshes and folder
+// moves), in localStorage alongside the other saved preferences.
+const STARRED_STORAGE_KEY = 'folderframe.starred';
+const STARRED_STORAGE_VERSION = 1;
+let starredSet = null;
+function ensureStarredSet() {
+    if (starredSet !== null) return starredSet;
+    starredSet = new Set();
+    try {
+        const raw = JSON.parse(localStorage.getItem(STARRED_STORAGE_KEY) || 'null');
+        if (raw && raw.version === STARRED_STORAGE_VERSION && Array.isArray(raw.paths)) {
+            for (const path of raw.paths) {
+                if (typeof path === 'string' && path) starredSet.add(path);
+            }
+        }
+    } catch (error) {
+        // Storage can be unavailable in privacy modes and embedded contexts.
+        console.warn('Could not load starred media:', error);
+    }
+    return starredSet;
+}
+function saveStarredSet() {
+    try {
+        localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify({
+            version: STARRED_STORAGE_VERSION,
+            paths: Array.from(ensureStarredSet()).sort()
+        }));
+    } catch (error) {
+        console.warn('Could not save starred media:', error);
+    }
+}
+function starKeyFor(file) {
+    return settingsApi.relativeMediaPath(activeSource, file);
+}
+function isStarred(file) {
+    return Boolean(file) && ensureStarredSet().has(starKeyFor(file));
+}
+function toggleStarred(file) {
+    const key = starKeyFor(file);
+    const set = ensureStarredSet();
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+    saveStarredSet();
+    return set.has(key);
+}
+
+// Media optimization. The Optimize buttons POST to the deployment's local
+// endpoint (proxied by Caddy at /api/optimize), which runs jpegoptim / oxipng
+// on the originals. Paths are sent relative to the media root so only the
+// validated server-side resolver ever touches the filesystem.
+const OPTIMIZE_ENDPOINT = '/betacaption/gallery/api/optimize';
+function isOptimizableImage(file) {
+    return /\.(jpe?g|png)$/i.test(file);
+}
+function optimizeRelativePath(file) {
+    const relative = settingsApi.relativeMediaPath(activeSource, file);
+    const prefix = activeSource?.path || '';
+    return prefix && relative.startsWith(prefix) ? relative.slice(prefix.length) : relative;
+}
+async function requestOptimization(payload) {
+    let response;
+    try {
+        const apiKey = localStorage.getItem('civitaiApiKey') || '';
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+        response = await fetch(OPTIMIZE_ENDPOINT, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+        });
+    } catch (error) {
+        throw new Error('Optimization is not available on this server.');
+    }
+    const data = response.ok ? await response.json().catch(() => null) : null;
+    if (!response.ok) {
+        throw new Error((data && data.error) || `Optimization failed (HTTP ${response.status})`);
+    }
+    return data;
+}
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+}
+function optimizeResultText(data) {
+    const count = Number.isFinite(data?.optimized) ? data.optimized : (data?.processed || 0);
+    const saved = Math.max(0, (data?.bytesBefore || 0) - (data?.bytesAfter || 0));
+    const errors = Array.isArray(data?.errors) ? data.errors.length : 0;
+    let text = `Optimized ${count} image${count === 1 ? '' : 's'}`;
+    if (saved > 0) text += ` (${formatBytes(saved)} saved)`;
+    if (errors) text += `, ${errors} error${errors === 1 ? '' : 's'}`;
+    return text;
+}
+
+// Media conversion. The Convert buttons POST to /api/convert (proxied by
+// Caddy to the same local server that handles optimization), which runs
+// mogrify -format <type> -quality 100. Originals are always kept; a folder
+// conversion covers only the files directly inside it and never re-encodes
+// files that already are the chosen type.
+const CONVERT_ENDPOINT = '/betacaption/gallery/api/convert';
+const CONVERT_FORMAT_LABELS = { jpg: 'JPEG', png: 'PNG', webp: 'WebP', gif: 'GIF', tiff: 'TIFF', bmp: 'BMP' };
+// A pending format choice waiting on the modal: { kind: 'file'|'folder', relative }.
+let convertRequest = null;
+async function requestConvert(payload) {
+    let response;
+    try {
+        const apiKey = localStorage.getItem('civitaiApiKey') || '';
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+        response = await fetch(CONVERT_ENDPOINT, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+        });
+    } catch (error) {
+        throw new Error('Conversion is not available on this server.');
+    }
+    const data = response.ok ? await response.json().catch(() => null) : null;
+    if (!response.ok) {
+        throw new Error((data && data.error) || `Conversion failed (HTTP ${response.status})`);
+    }
+    return data;
+}
+function convertResultText(data) {
+    const count = Number.isFinite(data?.converted) ? data.converted : (data?.processed || 0);
+    const format = CONVERT_FORMAT_LABELS[data?.format] || 'the new type';
+    const skipped = Number.isFinite(data?.skipped) ? data.skipped : 0;
+    const deleted = Number.isFinite(data?.deleted) ? data.deleted : 0;
+    const errors = Array.isArray(data?.errors) ? data.errors.length : 0;
+    let text = `Converted ${count} image${count === 1 ? '' : 's'} to ${format}`;
+    if (deleted > 0) text += `, ${deleted} original${deleted === 1 ? '' : 's'} deleted`;
+    if (skipped > 0) text += `, ${skipped} skipped`;
+    if (errors) text += `, ${errors} error${errors === 1 ? '' : 's'}`;
+    return text;
+}
+function openConvertPrompt(kind, relative) {
+    // Never let a second Optimize/Convert overlap the one already running:
+    // the server serializes jobs (409) and a mid-job prompt would just fail.
+    if (operationInFlight || isScanning) return;
+    convertRequest = { kind, relative };
+    $('convert-delete-original').checked = false;
+    $('convert-overlay').style.display = 'flex';
+}
+function closeConvertPrompt() {
+    convertRequest = null;
+    $('convert-overlay').style.display = 'none';
+}
+async function runConvert(kind, relative, format, deleteOriginal) {
+    const isFolder = kind === 'folder';
+    const button = isFolder ? btnConvertFolder : btnConvert;
+    const file = isFolder ? null : mediaFiles[currentIndex];
+    button.disabled = true;
+    operationInFlight = true;
+    if (isFolder) {
+        setScanStatus(`Converting images in ${currentFolder || activeSource.label}…`);
+    } else {
+        setMediaLoading(`Converting ${file ? decodeURIComponent(file.split('/').pop()) : 'image'}…`);
+    }
+    $('scan-loading').hidden = false;
+    setScanProgressBar('busy');
+    try {
+        const payload = isFolder ? { folder: relative, format } : { path: relative, format };
+        if (deleteOriginal) payload.delete = true;
+        const data = await requestConvert(payload);
+        if (isFolder) {
+            if (data?.errors?.length) console.warn('FolderFrame folder convert reported errors:', data.errors);
+            await loadGallery({ preserveView: true, forceCacheClear: true });
+            setScanStatus(convertResultText(data), Boolean(data?.errors?.length));
+        } else {
+            removeCacheEntry(file);
+            if (data?.deleted > 0) {
+                // The original is gone: refresh the listing so the deleted file
+                // drops out, then re-center the viewer on a surviving image.
+                await loadGallery({ preserveView: true, forceCacheClear: true });
+                if (mediaFiles.length) showMedia(Math.min(currentIndex, mediaFiles.length - 1));
+            } else {
+                showMedia(currentIndex); // the original is unchanged; reload it
+                // Refresh the listing so the newly created converted file appears
+                // in the folder view without a manual page refresh.
+                await loadGallery({ preserveView: true, forceCacheClear: true });
+            }
+            setMediaLoading(convertResultText(data));
+            setTimeout(() => { if (!isGridViewActive) setMediaLoading(); }, 1600);
+        }
+    } catch (error) {
+        console.warn('FolderFrame convert failed:', error);
+        setMediaLoading();
+        setScanStatus(`Convert failed: ${error.message}`, true);
+    } finally {
+        operationInFlight = false;
+        setScanProgressBar(null);
+        $('scan-loading').hidden = true;
+        const current = mediaFiles[currentIndex];
+        if (current) updateMediaActions(current, decodeURIComponent(current.split('/').pop()));
+        updateControlStates();
+    }
+}
+
+function currentDirectoryUrl(folder = currentFolder) {
+    return settingsApi.directoryUrl(activeSource, folder);
+}
+
+function mediaUrlFor(filename, folder = currentFolder) {
+    return settingsApi.mediaUrl(activeSource, folder, filename);
+}
+
+function updateFolderHistory(folder, mode = 'push') {
+    if (!window.history?.pushState) return;
+    const url = new URL(location.href);
+    if (folder) url.searchParams.set('album', folder);
+    else url.searchParams.delete('album');
+    const state = { ...(window.history.state || {}), folderFrameAlbum: folder };
+    window.history[mode === 'replace' ? 'replaceState' : 'pushState'](state, '', url);
+}
+
+function savePreferences() {
+    if (!rememberPreferences || !preferenceKey) return;
+    try {
+        localStorage.setItem(preferenceKey, JSON.stringify({
+            album: currentFolder, interval: slideshowInterval, imageMode,
+            shuffle: shuffleEnabled, autoRefresh: autoRefreshEnabled,
+            view: galleryViewMode, sort: sortMode, gridDensity
+        }));
+    } catch (error) {
+        // Storage can be unavailable in privacy modes and embedded contexts.
+        console.warn('Could not save FolderFrame preferences:', error);
+    }
+}
+
+// The Caption-this-Image button only makes sense when the captioning plugin
+// is installed, so probe its status endpoint once at startup and reveal the
+// section. A 401/404 means "not installed" and leaves it hidden.
+let captionCapable = false;
+async function loadCaptionCapability() {
+    const section = $('caption-this-section');
+    if (!section) return;
+    try {
+        const response = await fetch('/betacaption/api/status', { cache: 'no-store', credentials: 'same-origin' });
+        if (response.ok) {
+            const status = await response.json();
+            captionCapable = Boolean(status && status.ok !== false);
+        }
+    } catch (error) {
+        captionCapable = false;
+    }
+    if (!captionCapable) {
+        // Fall back to the installed-plugin list: this plugin may be present
+        // without exposing /status to this page yet. Only the beta channel
+        // counts — this copy never talks to the stable ComfyCaption plugin.
+        try {
+            const r = await fetch('/api/plugins', { cache: 'no-store', credentials: 'same-origin' });
+            if (r.ok) {
+                const list = await r.json();
+                if (Array.isArray(list) && list.some(p => p.id === 'betacaption')) {
+                    captionCapable = true;
+                }
+            }
+        } catch (e) {}
+    }
+    if (captionCapable && section) section.hidden = false;
+}
+
+async function loadOptimizeCapability() {
+    try {
+        const response = await fetch('/betacaption/gallery/api/optimize-status', { cache: 'no-store' });
+        if (!response.ok) return;
+        const status = await response.json();
+        if (status && typeof status.enabled === 'boolean') optimizeCapable = status.enabled;
+        if (status && typeof status.convert === 'boolean') convertCapable = status.convert;
+    } catch (error) {
+        // Deployment predates the status endpoint; keep optimization enabled.
+    }
+}
+
+async function loadConfiguration() {
+    const warnings = [];
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+        const response = await fetch('/betacaption/gallery/api/folderframe.config.json', { cache: 'no-store', signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        galleryConfig = settingsApi.normalizeConfig(await response.json(), location.href);
+    } catch (error) {
+        galleryConfig = settingsApi.normalizeConfig({}, location.href);
+        warnings.push(`Could not use folderframe.config.json (${error.message}). Using built-in defaults.`);
+    } finally {
+        clearTimeout(timeout);
+    }
+    const resolved = settingsApi.resolveSettings(galleryConfig, location.search, key => localStorage.getItem(key));
+    const startupSettings = resolved.settings;
+    activeSource = resolved.source;
+    preferenceKey = resolved.preferenceKey;
+    rememberPreferences = startupSettings.rememberPreferences;
+    controlsEnabled = startupSettings.controls;
+    showDownloadButton = startupSettings.showDownloadButton;
+    showCopyButton = startupSettings.showCopyButton;
+    btnDownload.hidden = !showDownloadButton;
+    btnCopyLink.hidden = !showCopyButton || !imageClipboardAvailable();
+    if (btnCopyFilename) btnCopyFilename.hidden = btnCopyLink.hidden;
+    document.body.classList.toggle('hide-filenames', !startupSettings.showFilenames);
+    document.body.classList.toggle('hide-viewer-button-labels', !startupSettings.showButtonLabels);
+    document.body.classList.toggle('controls-free', !controlsEnabled);
+    currentFolder = startupSettings.album;
+    galleryViewMode = startupSettings.view;
+    sortMode = startupSettings.sort;
+    slideshowInterval = startupSettings.interval;
+    imageMode = startupSettings.imageMode;
+    shuffleEnabled = startupSettings.shuffle;
+    autoRefreshEnabled = startupSettings.autoRefresh;
+    refreshInterval = startupSettings.refreshInterval;
+    tvModeEnabled = startupSettings.tvMode;
+    slideshowPlaying = startupSettings.autoplay;
+    applyGridDensity(startupSettings.gridDensity);
+
+    renderSourceRail();
+    document.querySelectorAll('.configured-source-path').forEach(element => { element.textContent = activeSource.path; });
+    warnings.push(...resolved.warnings);
+    if (warnings.length) {
+        console.warn('FolderFrame settings:', warnings);
+        $('config-notice').textContent = warnings.join(' ');
+        $('config-notice').hidden = false;
+    }
+}
+
+function updateControlStates() {
+    const sortLabels = { newest: 'Newest', oldest: 'Oldest', filename: 'Filename' };
+    $('sort-label').textContent = sortLabels[sortMode];
+    $('btn-sort').title = `Sorting: ${sortLabels[sortMode]}. Click to cycle Newest, Oldest, Filename.`;
+    $('btn-sort').setAttribute('aria-label', `Sort: ${sortLabels[sortMode]}. Change sorting`);
+    const densityLabels = { compact: 'Compact', comfortable: 'Comfortable', spacious: 'Spacious' };
+    const densityButton = $('btn-grid-density');
+    if (densityButton) {
+        $('grid-density-label').textContent = densityLabels[gridDensity];
+        densityButton.title = `Thumbnail size: ${densityLabels[gridDensity]}. Click to cycle Compact, Comfortable, Spacious.`;
+        densityButton.setAttribute('aria-label', `Thumbnail size: ${densityLabels[gridDensity]}. Change thumbnail size`);
+    }
+    selectInterval.value = String(slideshowInterval);
+    imageModeText.textContent = imageMode === 'fit' ? 'Fit' : 'Original';
+    btnImageMode.querySelector('.fit-mode-icon').hidden = imageMode !== 'fit';
+    btnImageMode.querySelector('.original-mode-icon').hidden = imageMode === 'fit';
+    btnImageMode.setAttribute('aria-pressed', String(imageMode === 'original'));
+    btnImageMode.setAttribute('aria-label', `Image sizing: ${imageMode === 'fit' ? 'Fit' : 'Original'}`);
+    btnImageMode.title = imageMode === 'fit' ? 'Fit image to screen. Click for original size.' : 'Show image at original size. Click to fit screen.';
+    btnShuffle.classList.remove('is-active');
+    btnShuffle.setAttribute('aria-pressed', String(shuffleEnabled));
+    btnShuffle.querySelector('.shuffle-on-icon').hidden = !shuffleEnabled;
+    btnShuffle.querySelector('.shuffle-off-icon').hidden = shuffleEnabled;
+    btnShuffle.querySelector('.button-label').textContent = shuffleEnabled ? 'Shuffle' : 'Shuffle Off';
+    btnAutoRefresh.title = `Automatically rescan every ${refreshInterval} seconds`;
+    btnAutoRefresh.classList.remove('is-active');
+    btnAutoRefresh.setAttribute('aria-pressed', String(autoRefreshEnabled));
+    btnAutoRefresh.querySelector('.button-label').textContent = autoRefreshEnabled ? 'Auto Refresh On' : 'Auto Refresh Off';
+    const strictManifest = isManifestOnlySource();
+    $('refresh-grid-label').textContent = strictManifest ? 'Reload Library' : 'Refresh Folder';
+    btnRefreshGrid.title = strictManifest
+        ? 'Reload the published media index. New files appear after the index is regenerated and redeployed.'
+        : 'Rescan the current album now';
+    btnRefreshGrid.setAttribute('aria-label', strictManifest ? 'Reload published library index' : 'Refresh current folder');
+    btnViewMode.classList.remove('is-active');
+    btnViewMode.setAttribute('aria-pressed', String(galleryViewMode === 'all'));
+    if (btnCopyFilename) btnCopyFilename.disabled = !mediaFiles.length || isGridViewActive;
+    // Like the other toggle buttons, the label describes the CURRENT state.
+    btnViewMode.querySelector('.button-label').textContent = galleryViewMode === 'all' ? 'All Pics' : 'By Folder';
+    btnViewMode.title = galleryViewMode === 'all'
+        ? 'Currently showing all media recursively — click to browse by folder'
+        : 'Currently browsing by folder — click to show all media recursively';
+    const starredCount = ensureStarredSet().size;
+    btnStars.classList.remove('is-active');
+    btnStars.setAttribute('aria-pressed', String(starFilterMode));
+    btnStars.title = starFilterMode
+        ? 'Currently showing starred media — click to show all'
+        : `Show only starred media${starredCount ? ` (${starredCount} starred)` : ''}`;
+    btnStars.setAttribute('aria-label', btnStars.title);
+    const folderOptimizeVisible = !starFilterMode && galleryViewMode === 'folders' && !isRemoteSource();
+    btnOptimizeFolder.hidden = !folderOptimizeVisible;
+    if (!optimizeCapable) {
+        btnOptimizeFolder.disabled = true;
+        btnOptimizeFolder.title = 'Optimization is disabled on this server';
+    } else {
+        btnOptimizeFolder.disabled = !folderOptimizeVisible || isScanning;
+        btnOptimizeFolder.title = galleryViewMode === 'all'
+            ? 'Optimize is available while browsing a folder'
+            : (isScanning ? 'Wait for the folder scan to finish' : 'Optimize every JPEG and PNG directly in this folder');
+    }
+    btnOptimizeFolder.setAttribute('aria-label', btnOptimizeFolder.title);
+    const folderConvertVisible = !starFilterMode && galleryViewMode === 'folders' && !isRemoteSource();
+    btnConvertFolder.hidden = !folderConvertVisible;
+    if (!convertCapable) {
+        btnConvertFolder.disabled = true;
+        btnConvertFolder.title = 'Convert is disabled on this server';
+    } else if (operationInFlight) {
+        btnConvertFolder.disabled = true;
+        btnConvertFolder.title = 'A conversion is already running';
+    } else {
+        btnConvertFolder.disabled = !folderConvertVisible || isScanning;
+        btnConvertFolder.title = galleryViewMode === 'all'
+            ? 'Convert is available while browsing a folder'
+            : (isScanning ? 'Wait for the folder scan to finish' : 'Convert images in this folder to another format');
+    }
+    btnConvertFolder.setAttribute('aria-label', btnConvertFolder.title);
+    btnTvMode.classList.remove('is-active');
+    btnTvMode.setAttribute('aria-pressed', String(tvModeEnabled));
+    btnTvMode.querySelector('.button-label').textContent = tvModeEnabled ? 'TV Mode On' : 'TV Mode';
+    syncPlayButton();
+}
+
+function imageClipboardAvailable() {
+    return Boolean(window.isSecureContext && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined');
+}
+
+// --- SDCodex metadata details panel -----------------------------------------
+function infoRelPath(filepath) {
+    // Convert a media URL back to a folder/file pair relative to the browse
+    // source (e.g. "Album/a.png" or "root.png").
+    try {
+        const rel = settingsApi.relativeMediaPath(activeSource, filepath);
+        const parts = rel.split('/');
+        const file = parts.pop();
+        return { folder: parts.join('/'), file };
+    } catch {
+        return { folder: currentFolder, file: '' };
+    }
+}
+
+function setInfoPanel(open) {
+    if (!infoPanel) return;
+    infoPanel.hidden = !open;
+    if (open) {
+        infoPanel.classList.remove('ui-hidden');
+    } else {
+        infoPanel.classList.add('ui-hidden');
+    }
+    if (btnInfo) btnInfo.setAttribute('aria-pressed', String(open));
+    if (open) resetIdleTimer();
+}
+
+function toggleInfoPanel() {
+    setInfoPanel(infoPanel.hidden);
+    if (!infoPanel.hidden) loadMediaMetadata(mediaFiles[currentIndex], true);
+}
+
+function cancelGalleryMetaLoad() {
+    if (galleryMetaSession) { galleryMetaSession.controller.abort(); galleryMetaSession = null; }
+}
+
+function showInfoLoading(fileName) {
+    infoFileName.textContent = fileName;
+    infoCaption.textContent = '';
+    infoSdPrompt.textContent = '';
+    infoSdNegative.textContent = '';
+    infoSdSetting.textContent = '';
+    infoWorkflowSection.hidden = true;
+    infoError.hidden = true;
+    infoError.textContent = '';
+    infoLoading.hidden = false;
+    btnDownloadWorkflow.hidden = true;
+}
+
+// ── "Caption this Image" (ComfyCaption plugin) ─────────────────────────────
+// Shown only when the captioning plugin is installed. Captions the currently
+// displayed media through the captioning plugin's own /api/caption-single, so
+// all captioning logic stays in that plugin (single source of truth).
+async function captionCurrentImage() {
+    if (!btnCaptionThis || mediaFiles.length <= 0) return;
+    const tooltip = btnCaptionThis.title;
+    const rel = infoRelPath(mediaFiles[currentIndex]);
+    if (!rel.file) return;
+
+    const setStatus = (text, ok = true, err = false) => {
+        if (!captionThisStatus) return;
+        captionThisStatus.style.display = '';
+        captionThisStatus.textContent = text;
+        captionThisStatus.style.color = err ? 'var(--danger)' : (ok ? 'var(--text-secondary)' : '');
+    };
+
+    captionThisLabel.textContent = 'Captioning…';
+    btnCaptionThis.disabled = true;
+    setStatus('');
+
+    try {
+        // 1. Resolve this gallery file to the absolute container folder/file.
+        const params = new URLSearchParams({ folder: rel.folder, file: rel.file });
+        const target = await resilience.request(`/betacaption/gallery/api/caption-target?${params}`, {
+            signal: new AbortController().signal, timeout: 15000, cache: 'no-store', body: 'json'
+        });
+        if (!target.ok) throw new Error(target.error || 'Could not resolve image path');
+
+        // 2. Gather captioning settings (mirrors the captioning page).
+        const lmStudioUrl = localStorage.getItem('captionLmStudioUrl') || 'http://localhost:1234/v1';
+        const prompt = localStorage.getItem('captionPrompt') || 'Caption this image';
+        const triggerTag = localStorage.getItem('captionTriggerTag') || '';
+        let model = localStorage.getItem('captionModel') || '';
+
+        // 3. Pick a model id from the running LM Studio server when possible.
+        if (!model) {
+            try {
+                // NOTE: raw fetch (not resilience.request) — the resilience
+                // request API uses the same `body` key for the request body and
+                // the response mode, so a JSON request body is silently dropped
+                // (last `body: 'json'` wins) and Flask 400s on the empty body.
+                const conn = await fetch('/betacaption/api/check-connection', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lmStudioUrl })
+                }).then(r => r.json().catch(() => null));
+                if (conn && conn.connected && Array.isArray(conn.models) && conn.models.length) {
+                    model = conn.models[0].id;
+                }
+            } catch (_) { /* model discovery is best-effort */ }
+        }
+
+        // 4. Run the caption via the captioning plugin.
+        // Raw fetch (see note above): resilience.request would drop the JSON
+        // body due to the `body` key collision, sending an empty body that
+        // Flask rejects with a 400 Bad Request.
+        const res = await fetch('/betacaption/api/caption-single', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                folderPath: target.folderPath,
+                fileName: target.fileName,
+                prompt,
+                lmStudioUrl,
+                model,
+                triggerTag
+            })
+        }).then(r => r.json().catch(() => null));
+
+        if (res && res.caption) {
+            // The gallery reads captions from the <basename>.txt sidecar that
+            // the captioning plugin just wrote — refresh the details panel.
+            await loadMediaMetadata(mediaFiles[currentIndex], { force: true });
+            setStatus('Caption updated.');
+        } else {
+            throw new Error(res?.error || 'Captioning returned no caption');
+        }
+    } catch (err) {
+        console.error('Caption this image failed:', err);
+        setStatus('Captioning failed: ' + (err.message || err), false, true);
+    } finally {
+        if (captionThisLabel) captionThisLabel.textContent = 'Caption this Image';
+        btnCaptionThis.disabled = false;
+    }
+}
+
+function renderInfoStats(meta) {
+    const stats = [];
+    if (meta.size || meta.size_fmt) stats.push(['Size', meta.size_fmt || formatBytes(meta.size)]);
+    if (meta.format) stats.push(['Type', meta.format]);
+    if (meta.width && meta.height) stats.push(['Dimensions', `${meta.width} × ${meta.height}`]);
+    if (meta.kind) stats.push(['Kind', meta.kind]);
+    if (stats.length) {
+        infoStats.innerHTML = stats
+            .map(([label, value]) => `<span class="info-stat"><span class="info-stat-label">${label}</span>${value}</span>`)
+            .join('');
+    } else {
+        infoStats.textContent = 'No file details available.';
+    }
+    const exif = meta.exif && typeof meta.exif === 'object' ? meta.exif : {};
+    const rows = Object.entries(exif).filter(([, value]) => value !== '' && value != null);
+    infoExif.textContent = rows.length ? rows.map(([key, value]) => `${key}: ${value}`).join('\n') : 'No EXIF data found.';
+}
+
+function renderInfoMeta(meta) {
+    infoLoading.hidden = true;
+    infoCaption.textContent = meta.caption || 'No caption found.';
+    infoSdPrompt.textContent = meta.sdPrompt || 'No embedded SD prompt found.';
+    infoSdNegative.textContent = meta.sdNegative || 'No negative prompt found.';
+    infoSdSetting.textContent = meta.sdSetting || 'No generation settings found.';
+    infoWorkflowSection.hidden = !meta.hasWorkflow;
+    btnDownloadWorkflow.hidden = !meta.hasWorkflow;
+    renderInfoStats(meta);
+}
+
+async function loadMediaMetadata(filepath, { force = false } = {}) {
+    cancelGalleryMetaLoad();
+    const rel = infoRelPath(filepath);
+    if (!rel.file) return;
+    currentMetadataFile = { folder: rel.folder, file: rel.file };
+    showInfoLoading(rel.file);
+    const controller = new AbortController();
+    galleryMetaSession = { controller };
+    const query = new URLSearchParams({ folder: rel.folder, file: rel.file });
+    // Remote Immich sources read their details from the server's own API; the
+    // local endpoint would look for the file on disk.
+    const sid = immichSourceId();
+    const metaUrl = sid ? `/betacaption/gallery/api/immich/${sid}/meta?${query}` : `/betacaption/gallery/api/meta?${query}`;
+    try {
+        const response = await resilience.request(metaUrl, {
+            signal: controller.signal, timeout: 15000, cache: 'no-store', body: 'json'
+        });
+        const meta = response;
+        if (controller.signal.aborted) return;
+        if (!meta || meta.ok === false) {
+            infoLoading.hidden = true;
+            infoError.hidden = false;
+            infoError.textContent = meta?.error || 'Could not read image metadata.';
+            return;
+        }
+        renderInfoMeta(meta);
+    } catch (error) {
+        if (controller.signal.aborted) return;
+        infoLoading.hidden = true;
+        infoError.hidden = false;
+        infoError.textContent = 'Could not load metadata: ' + (error.message || 'request failed');
+    } finally {
+        if (galleryMetaSession?.controller === controller) galleryMetaSession = null;
+    }
+}
+
+function downloadCurrentWorkflow() {
+    if (!currentMetadataFile) return;
+    const url = `/betacaption/gallery/api/workflow?folder=${encodeURIComponent(currentMetadataFile.folder)}&file=${encodeURIComponent(currentMetadataFile.file)}`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+function updateMediaActions(filepath, filename, forceVideo = false) {
+    btnDownload.href = filepath;
+    btnDownload.download = filename;
+    btnDownload.setAttribute('aria-label', `Download ${filename}`);
+    const copyable = isImageFile(filepath) && !forceVideo;
+    btnRotate.disabled = true;
+    btnCopyLink.disabled = true;
+    if (btnCopyFilename) btnCopyFilename.disabled = true;
+    const clipboardAvailable = imageClipboardAvailable();
+    btnCopyLink.hidden = !showCopyButton || !clipboardAvailable;
+    if (btnCopyFilename) btnCopyFilename.hidden = btnCopyLink.hidden;
+    btnCopyLink.setAttribute('aria-label', copyable ? `Copy image ${filename}` : 'Copy Image is unavailable for video');
+    btnCopyLink.title = !copyable ? 'Copy Image is unavailable for video'
+        : !clipboardAvailable ? 'Copy Image requires HTTPS or a trusted local context'
+        : 'Copy displayed image after it loads';
+    // Optimize/Convert rewrite files on disk, which is impossible for an
+    // asset living on an Immich server: hide them and keep Download pointed at
+    // the untouched original instead of the preview the viewer proxies.
+    const remote = isRemoteSource();
+    btnOptimize.hidden = remote;
+    btnConvert.hidden = remote;
+    const captionSection = $('caption-this-section');
+    if (captionSection) {
+        // Captioning writes a .txt sidecar next to the file, so it only works
+        // for local images and only when the captioning plugin is installed.
+        captionSection.hidden = !captionCapable || remote || !isImageFile(filepath) || forceVideo;
+    }
+    if (remote) {
+        btnOptimize.disabled = true;
+        btnOptimize.title = 'Optimize is available for local files only';
+        btnOptimize.setAttribute('aria-label', btnOptimize.title);
+        btnConvert.disabled = true;
+        btnConvert.title = 'Convert is available for local files only';
+        btnConvert.setAttribute('aria-label', btnConvert.title);
+        const original = immichOriginalUrl(filepath);
+        if (original) btnDownload.href = original;
+    }
+    const optimizable = isOptimizableImage(filepath);
+    if (remote) {
+        // handled above — local-only actions never apply to a remote asset
+    } else if (!optimizeCapable) {
+        btnOptimize.disabled = true;
+        btnOptimize.title = 'Optimization is disabled on this server';
+        btnOptimize.setAttribute('aria-label', 'Optimization is disabled on this server');
+    } else {
+        btnOptimize.disabled = !optimizable;
+        btnOptimize.setAttribute('aria-label', optimizable ? `Optimize ${filename}` : 'Optimize is only available for JPEG and PNG images');
+        btnOptimize.title = optimizable ? 'Optimize this image' : 'Only JPEG and PNG images can be optimized';
+    }
+    const convertible = isImageFile(filepath) && !forceVideo;
+    if (!convertCapable) {
+        btnConvert.disabled = true;
+        btnConvert.title = 'Convert is disabled on this server';
+        btnConvert.setAttribute('aria-label', 'Convert is disabled on this server');
+    } else if (operationInFlight) {
+        btnConvert.disabled = true;
+        btnConvert.title = 'A conversion is already running';
+        btnConvert.setAttribute('aria-label', 'A conversion is already running');
+    } else {
+        btnConvert.disabled = !convertible;
+        btnConvert.setAttribute('aria-label', convertible ? `Convert ${filename}` : 'Convert is only available for image files');
+        btnConvert.title = convertible ? 'Convert this image to another type' : 'Convert is only available for image files';
+    }
+    if (btnInfoConvert) {
+        btnInfoConvert.disabled = !convertible || !convertCapable || operationInFlight;
+        btnInfoConvert.title = btnConvert.title;
+    }
+}
+
+function updateViewerStarState() {
+    const file = mediaFiles[currentIndex];
+    const filename = file ? decodeURIComponent(file.split('/').pop()) : '';
+    const starred = isStarred(file);
+    btnViewerStar.disabled = !file;
+    btnViewerStar.classList.remove('is-active');
+    btnViewerStar.setAttribute('aria-pressed', String(starred));
+    btnViewerStar.setAttribute('aria-label', starred ? `Unstar ${filename}` : `Star ${filename}`);
+    btnViewerStar.title = starred ? 'Remove star from this media' : 'Star this media';
+    const starOn = btnViewerStar.querySelector('.star-on-icon');
+    const starOff = btnViewerStar.querySelector('.star-off-icon');
+    if (starOn && starOff) {
+        starOn.hidden = !starred;
+        starOff.hidden = starred;
+    }
+}
+
+function updateGalleryHeaderLayout() {
+    if (!gridHeader || !gridHeaderMain || !gridActions) return;
+    // Refresh Folder / Reload Library stays in the options menu with a text label.
+    const controls = [
+        { button: $('btn-grid-density'), home: gridDensitySlot, menu: gridDensityMenuSlot },
+        { button: $('btn-sort'), home: gridSortSlot, menu: gridSortMenuSlot },
+        { button: btnStars, home: gridStarsSlot, menu: gridStarsMenuSlot },
+        { button: btnOptimizeFolder, home: gridOptimizeSlot, menu: gridOptimizeMenuSlot },
+        { button: btnConvertFolder, home: gridConvertSlot, menu: gridConvertMenuSlot },
+        { button: $('btn-view-mode'), home: gridViewModeSlot, menu: gridViewModeMenuSlot }
+    ].filter(control => control.button && control.home && control.menu);
+
+    // Start with the full desktop toolbar. If the navigation and actions cannot
+    // share one line, move controls into Options one at a time, least essential first.
+    controls.forEach(({ button, home }) => {
+        if (button.parentElement !== home) home.appendChild(button);
+        button.setAttribute('role', 'button');
+    });
+    const available = gridHeader.clientWidth || 0;
+    const doesNotFit = () => available > 0 &&
+        (gridHeaderMain.scrollWidth || 0) + (gridActions.scrollWidth || 0) + 18 > available;
+    controls.forEach(({ button, menu }) => {
+        if (!doesNotFit()) return;
+        menu.appendChild(button);
+        button.setAttribute('role', 'menuitem');
+    });
+    gridHeader.classList.toggle('actions-collapsed', controls.some(({ button, menu }) => button.parentElement === menu));
+}
+
+function setViewerOptionsOpen(open) {
+    const expanded = Boolean(open);
+    viewerOptionsMenu.hidden = !expanded;
+    btnViewerOptions.setAttribute('aria-expanded', String(expanded));
+}
+
+function setGridOptionsOpen(open) {
+    const expanded = Boolean(open);
+    gridOptionsMenu.hidden = !expanded;
+    btnGridOptions.setAttribute('aria-expanded', String(expanded));
+}
+
+function imageClipboardBlob() {
+    return new Promise((resolve, reject) => {
+        if (!imageReady || !img.naturalWidth || !img.naturalHeight) return reject(new Error('Image is not ready'));
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        const context = canvas.getContext?.('2d');
+        if (!context) return reject(new Error('Canvas is unavailable'));
+        try { context.drawImage(img, 0, 0); }
+        catch (error) { return reject(error); }
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not create clipboard image')), 'image/png');
+    });
+}
+
+
+async function copyCurrentFilename() {
+    const name = mediaFiles[currentIndex] ? mediaFiles[currentIndex].split('/').pop() : (mediaTitle?.textContent || '').trim();
+    if (!name || name === 'Loading…') return;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(name);
+        } else {
+            const ta = document.createElement('textarea');
+            ta.value = name;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+        }
+        if (btnCopyFilename) {
+            const label = btnCopyFilename.querySelector('.button-label');
+            const prev = label?.textContent;
+            if (label) label.textContent = 'Copied';
+            setTimeout(() => { if (label && prev) label.textContent = prev; }, 1200);
+        }
+    } catch (error) {
+        console.warn('FolderFrame: could not copy filename.', error);
+    }
+}
+
+async function copyCurrentImage() {
+    if (!isPhotoActive() || btnCopyLink.disabled) return;
+    const label = btnCopyLink.querySelector('.button-label');
+    try {
+        if (!window.isSecureContext || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+            throw new Error('Image clipboard requires a secure context');
+        }
+        // Start the clipboard write during the click's transient user activation.
+        // Supplying the PNG as a promise prevents Firefox/Safari from losing that
+        // activation while the canvas finishes encoding.
+        const png = imageClipboardBlob();
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+        label.textContent = 'Copied';
+        btnCopyLink.title = 'Image copied';
+    } catch (error) {
+        label.textContent = 'Copy Failed';
+        btnCopyLink.title = 'Could not copy image; clipboard access may require HTTPS or permission';
+    }
+    setTimeout(() => { label.textContent = 'Copy Image'; btnCopyLink.title = 'Copy displayed image'; }, 1800);
+}
+
+function syncPlayButton() {
+    playIcon.style.display = slideshowPlaying ? 'none' : 'inline';
+    pauseIcon.style.display = slideshowPlaying ? 'inline' : 'none';
+    slideshowText.textContent = slideshowPlaying ? 'Pause' : 'Play';
+}
+
+function clearImageBlobCache() { specialImagePool?.invalidate(); }
+function removeCacheEntry(filepath) { specialImagePool?.invalidate(filepath); }
+function detectContainer(arrayBuffer) {
+    const b = new Uint8Array(arrayBuffer);
+    if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg';
+    if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a) return 'png';
+    if (b.length >= 12 && ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 12) === 'WEBP') return 'webp';
+    if (b.length >= 6) {
+        const gifSignature = ascii(b, 0, 6);
+        if (gifSignature === 'GIF87a' || gifSignature === 'GIF89a') return 'gif';
+    }
+
+    // ISO Base Media File Format: size(4) + "ftyp" + major brand(4) + compatible brands.
+    if (b.length >= 16 && ascii(b, 4, 8) === 'ftyp') {
+        const brands = [];
+        brands.push(ascii(b, 8, 12));
+        for (let offset = 16; offset + 4 <= Math.min(b.length, 64); offset += 4) {
+            brands.push(ascii(b, offset, offset + 4));
+        }
+        const avifBrands = new Set(['avif','avis']);
+        if (brands.some(brand => avifBrands.has(brand))) return 'avif';
+        const heifBrands = new Set(['heic','heix','hevc','hevx','heim','heis','mif1','msf1','avic']);
+        if (brands.some(brand => heifBrands.has(brand))) return 'heic';
+        const quickTimeBrands = new Set(['qt  ','isom','iso2','mp41','mp42','m4v ','M4V ','avc1','hvc1','hev1','dash','msdh','M4A ','3gp4','3g2a']);
+        if (brands.some(brand => quickTimeBrands.has(brand))) return 'quicktime';
+    }
+    return 'unknown';
+}
+
+function reclassifiedContainerError(container, data) {
+    return Object.assign(new Error(`Media container is ${container}, not an image`), {
+        name: 'MediaReclassificationError', container, data
+    });
+}
+
+function isQuickTimeReclassification(error) {
+    return error?.name === 'MediaReclassificationError' && error.container === 'quicktime';
+}
+
+async function sniffContainer(filepath, signal) {
+    try {
+        const data = await resilience.request(filepath, {
+            signal, timeout: MEDIA_TIMEOUT, body: 'arrayBuffer', cache: 'no-store',
+            headers: { Range: 'bytes=0-63' }
+        });
+        return { container: detectContainer(data), data };
+    } catch (error) {
+        if (signal?.aborted || error.name === 'AbortError') throw error;
+        return { container: 'unknown', data: null };
+    }
+}
+
+function ascii(bytes, start, end) {
+    return String.fromCharCode(...bytes.slice(start, end));
+}
+
+function mimeForFormat(format) {
+    return ({ jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif' })[format] || '';
+}
+
+async function makeThumbnail(blob) {
+    const temporary = URL.createObjectURL(blob);
+    try {
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+            image.onload = resolve; image.onerror = () => reject(new Error('Thumbnail decode failed'));
+            image.src = temporary;
+        });
+        const scale = Math.min(1, 480 / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        return await new Promise((resolve, reject) => canvas.toBlob(
+            result => result ? resolve(result) : reject(new Error('Thumbnail resize failed')), 'image/jpeg', 0.8));
+    } finally { URL.revokeObjectURL(temporary); }
+}
+let heicDecoderPromise = null;
+function loadHeicDecoder() {
+    if (typeof globalThis.heic2any === 'function') return Promise.resolve(globalThis.heic2any);
+    if (heicDecoderPromise) return heicDecoderPromise;
+
+    heicDecoderPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = '/betacaption/gallery/api/legacy-ui/heic2any.min.js';
+        script.async = true;
+        script.onload = () => typeof globalThis.heic2any === 'function'
+            ? resolve(globalThis.heic2any)
+            : reject(new Error('HEIC decoder library did not initialize'));
+        script.onerror = () => reject(new Error('HEIC decoder library did not load'));
+        document.head.appendChild(script);
+    }).catch(error => {
+        // A transient load failure may be retried by the next HEIC request.
+        heicDecoderPromise = null;
+        throw error;
+    });
+    return heicDecoderPromise;
+}
+function getImagePool() {
+    if (!specialImagePool) specialImagePool = resilience.createImagePool({
+        download: (file, signal) => resilience.request(file, { signal, timeout: MEDIA_TIMEOUT, body: 'arrayBuffer', cache: 'no-store' }),
+        decode: async data => {
+            const format = detectContainer(data);
+            if (['jpeg', 'png', 'webp', 'gif', 'avif'].includes(format)) return new Blob([data], { type: mimeForFormat(format) });
+            if (format === 'quicktime') throw reclassifiedContainerError('quicktime', data);
+            if (format !== 'heic') throw new Error('Unknown or corrupt image format');
+            const decodeHeic = await loadHeicDecoder();
+            const result = await decodeHeic({ blob: new Blob([data], { type: 'image/heic' }), toType: 'image/jpeg', quality: 0.92 });
+            return Array.isArray(result) ? result[0] : result;
+        },
+        thumbnail: makeThumbnail,
+        createURL: blob => URL.createObjectURL(blob), revokeURL: url => URL.revokeObjectURL(url)
+    });
+    return specialImagePool;
+}
+async function getSpecialImageURL(filepath, signal, kind = 'viewer') {
+    const lease = await getImagePool().acquire(filepath, kind, signal);
+    if (signal?.aborted) { lease.release(); throw resilience.abortError(); }
+    if (signal) signal.addEventListener('abort', lease.release, { once: true });
+    else lease.release();
+    return lease.url;
+}
+
+async function scanDirectory(folder = currentFolder, options = {}) {
+    const url = currentDirectoryUrl(folder);
+    const normalized = folder.split('/').filter(Boolean).join('/');
+    let directoryMtime = null;
+    if (usesPublishedManifest()) {
+        const indexed = await persistentDirectoryListing(normalized, options.signal);
+        if (indexed) return indexed;
+    }
+    if (isManifestOnlySource()) {
+        throw persistentManifestError('The published media index does not contain this folder.');
+    }
+    if (!options.bypassCache && activeSource.scanCache) {
+        const manifest = getScanManifest();
+        const cached = manifest.directories[normalized];
+        directoryMtime = await directoryModifiedTime(url, options.signal);
+        if (directoryMtime != null && cached?.mtime === directoryMtime &&
+            Array.isArray(cached.files) && Array.isArray(cached.folders)) {
+            cached.checked = Date.now();
+            return { filePaths: cached.files.map(file => file.path), folderNames: [...cached.folders], ignored: Boolean(cached.ignored) };
+        }
+    }
+    const html = await resilience.request(url, { cache: 'no-store', timeout: DIRECTORY_TIMEOUT, ...options });
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const files = new Set();
+    const folders = new Set();
+    let ignored = false;
+
+    for (const link of doc.querySelectorAll('a')) {
+        const entry = settingsApi.listingEntry(link.getAttribute('href'), url);
+        if (!entry) continue;
+        if (entry.directory) {
+            if (!isIgnoredDirectoryName(entry.name)) folders.add(entry.name);
+        } else if (IGNORE_SENTINELS.has(entry.name.toLowerCase())) {
+            ignored = true;
+        } else if (!isIgnoredFileName(entry.name) && isMediaFile(entry.name)) {
+            files.add(entry.name);
+        }
+    }
+
+    if (ignored) { files.clear(); folders.clear(); }
+
+    const filePaths = Array.from(files)
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+        .map(filename => mediaUrlFor(filename, folder));
+    const folderNames = Array.from(folders)
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+    if (!options.bypassCache && activeSource.scanCache) {
+        const manifest = getScanManifest();
+        manifest.directories[normalized] = {
+            path: normalized, mtime: directoryMtime, checked: Date.now(),
+            files: filePaths.map(path => {
+                const metadata = modifiedDateCache.get(path);
+                return { path, mtime: metadata?.date ?? null, size: metadata?.size ?? null,
+                    thumbnailPath: persistentThumbnailUrl(path) };
+            }),
+            folders: folderNames, ignored
+        };
+        saveScanManifest();
+    }
+
+    return { filePaths, folderNames, ignored };
+}
+
+async function scanDirectoryRecursive(folder = currentFolder, visited = new Set(), listing = null, signal, onBatch = null, options = {}) {
+    // Bounded breadth-first worker pool over a shared frontier list. A worker
+    // handles exactly one directory's listing, pushes any discovered
+    // subfolders back onto the shared frontier, then returns and frees its
+    // slot — it never blocks waiting on its own children. That matters:
+    // recursively scheduling a task that itself awaits Promise.all(children)
+    // onto the same bounded queue can deadlock — once SCAN_SIBLING_CONCURRENCY
+    // parent tasks all occupy a slot while waiting on children, no child can
+    // ever be dequeued to unblock them. This flat design has no such wait
+    // chain, so it can't deadlock regardless of tree width or depth.
+    const files = [];
+    const failedFolders = [];
+    const frontier = [];
+    const pendingByTop = new Map();
+    let inFlight = 0, settled = false;
+    let resolveDone, rejectDone;
+    const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
+
+    const push = (path, depth, top) => {
+        frontier.push({ path, depth, top });
+        if (top != null) pendingByTop.set(top, (pendingByTop.get(top) || 0) + 1);
+    };
+    // A top-level (depth-1) subtree's onTopComplete fires once every item
+    // pushed under it — itself plus every descendant — has finished, whether
+    // that item succeeded, failed, or was skipped as already-visited.
+    const settleTop = top => {
+        if (top == null) return;
+        const remaining = (pendingByTop.get(top) || 1) - 1;
+        if (remaining <= 0) {
+            pendingByTop.delete(top);
+            try { options.onTopComplete?.(top); }
+            catch (error) { fail(error); }
+        }
+        else pendingByTop.set(top, remaining);
+    };
+    const fail = error => { if (!settled) { settled = true; rejectDone(error); } };
+    const finish = () => { if (!settled && !frontier.length && !inFlight) { settled = true; resolveDone(); } };
+
+    frontier.push({ path: folder.split('/').filter(Boolean).join('/'), depth: 0, top: null, listing });
+
+    async function run(item) {
+        inFlight++;
+        try {
+            const normalized = item.path;
+            if (signal?.aborted) throw resilience.abortError();
+            if (visited.has(normalized)) return;
+            visited.add(normalized);
+            let dir;
+            try {
+                dir = item.listing || await scanDirectory(normalized, { signal, bypassCache: options.bypassCache });
+            } catch (error) {
+                if (signal?.aborted || error?.name === 'AbortError') throw error;
+                failedFolders.push(normalized);
+                return;
+            }
+            // Another worker may have failed while this request was settling.
+            // Do not publish late results after the overall scan has rejected.
+            if (settled) return;
+            const { filePaths, folderNames } = dir;
+            if (dir.ignored) return;
+            files.push(...filePaths);
+            scannedFolders++; scannedFiles += filePaths.length;
+            setScanProgress(`Scanning… ${scannedFolders} folders checked · ${scannedFiles} files found`);
+            // onBatch can fire concurrently across workers (previously always
+            // serial). Safe only because publishDiscovered (loadGallery) does
+            // no `await` inside its own body — adding one there later would
+            // introduce a race condition on the discovered/unpublished state.
+            if (onBatch && filePaths.length) await onBatch(filePaths, normalized);
+            for (const child of folderNames) {
+                const childPath = normalized ? normalized + '/' + child : child;
+                push(childPath, item.depth + 1, item.depth === 0 ? childPath : item.top);
+            }
+        } catch (error) {
+            fail(error);
+        } finally {
+            settleTop(item.top);
+            inFlight--;
+            pump();
+        }
+    }
+
+    function pump() {
+        if (settled) return;
+        while (inFlight < SCAN_SIBLING_CONCURRENCY && frontier.length) run(frontier.shift());
+        finish();
+    }
+
+    pump();
+    await done;
+    return { files, failedFolders };
+}
+
+function compareFilenames(a, b) {
+    const name = url => decodeURIComponent(url.split('/').pop());
+    return name(a).localeCompare(name(b), undefined, { numeric: true, sensitivity: 'base' }) ||
+        a.localeCompare(b);
+}
+
+async function sortMediaFiles(files, mode, refreshDates = false, signal) {
+    if (signal?.aborted) throw resilience.abortError();
+    if (mode === 'filename') return [...files].sort(compareFilenames);
+    loadDateCache();
+    trimDateCache();
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    // Bound the entire metadata pass, rather than waiting per file indefinitely.
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    let cursor = 0;
+    const now = Date.now();
+    const dates = new Map();
+    try {
+        const worker = async () => {
+            while (cursor < files.length) {
+                const file = files[cursor++];
+                const cached = modifiedDateCache.get(file);
+                if (!refreshDates && cached && now - cached.checked < DATE_CACHE_TTL) {
+                    dates.set(file, cached.date);
+                    continue;
+                }
+                if (controller.signal.aborted) { dates.set(file, null); continue; }
+                let date = null;
+                try {
+                    const response = await fetch(file, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+                    const header = response.ok ? response.headers?.get('Last-Modified') : null;
+                    const parsed = header ? Date.parse(header) : NaN;
+                    if (Number.isFinite(parsed)) date = parsed;
+                } catch (error) {
+                    // No metadata (including unsupported HEAD/CORS): keep the file, sorted last.
+                }
+                dates.set(file, date);
+                if (!controller.signal.aborted) modifiedDateCache.set(file, { date, checked: now });
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
+    } finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); saveDateCache(); }
+    if (signal?.aborted) throw resilience.abortError();
+    const missing = files.filter(file => dates.get(file) == null).length;
+    $('btn-sort').title = `Sorting: ${mode === 'newest' ? 'Newest' : 'Oldest'} by file modification date. ${missing} files without dates sort last by filename. Click to change sorting.`;
+    return [...files].sort((a, b) => {
+        const left = dates.get(a), right = dates.get(b);
+        if (left == null && right != null) return 1;
+        if (left != null && right == null) return -1;
+        const difference = left != null && right != null ? (left - right) * (mode === 'newest' ? -1 : 1) : 0;
+        return difference || compareFilenames(a, b);
+    });
+}
+
+async function cycleSort() {
+    if (isScanning) return;
+    const modes = ['newest', 'oldest', 'filename'];
+    sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.length];
+    updateControlStates();
+    await loadGallery();
+}
+
+function cycleGridDensity() {
+    // Purely a display re-layout of already-loaded mediaFiles/subfolders — no
+    // rescan, no new network requests, safe to call directly on click.
+    const order = ['compact', 'comfortable', 'spacious'];
+    applyGridDensity(order[(order.indexOf(gridDensity) + 1) % order.length]);
+    updateControlStates();
+    savePreferences();
+    if (isGridViewActive) renderGridView();
+}
+
+function showScanFailures(folders) {
+    const notice = $('scan-failures');
+    notice.hidden = !folders.length;
+    $('scan-failure-text').textContent = folders.length
+        ? 'Scan incomplete. Could not read: ' + folders.join(', ') + '. Previously loaded files from these folders were retained.'
+        : '';
+}
+
+function parentFolder(folder) {
+    const parts = folder.split('/').filter(Boolean);
+    parts.pop();
+    return parts.join('/');
+}
+
+function isMissingFolderError(error) {
+    return error?.name === 'HTTPError' && (error.status === 404 || error.status === 410);
+}
+
+function handleMissingFolder(folder) {
+    const parent = parentFolder(folder);
+    scanSession?.abort();
+    stopViewerSession(); stopGridSession(); stopSlideshow();
+    mediaLoadId++;
+    video.pause();
+    clearMediaSource(video); clearMediaSource(img);
+    mediaFiles = []; subfolders = []; currentIndex = 0;
+    failedNavigation = null; warningReturnFolder = null;
+    currentFolder = parent;
+    missingFolderRecovery = { folder, parent };
+    isGridViewActive = true;
+    syncViewerModal();
+    viewport.style.display = 'none';
+    gridViewContainer.style.display = controlsEnabled ? 'flex' : 'none';
+    thumbnailGrid.innerHTML = '';
+    showScanFailures([]);
+    $('warning-title').textContent = 'Album No Longer Available';
+    $('warning-message').textContent = `The album “${folder}” was removed, renamed, or is no longer available.`;
+    setScanStatus('Album no longer available', true);
+    renderBreadcrumb();
+    showWarning(true);
+    savePreferences();
+}
+
+async function loadGallery({ preserveView = true, forceCacheClear = false, silent = false } = {}) {
+    if (isScanning && silent) return;
+    scanSession?.abort();
+    const session = new AbortController();
+    scanSession = session;
+    // The starred view is a global filter: scan the whole source recursively
+    // (as "all" mode does) regardless of the folder the user is browsing, so
+    // every starred media anywhere in the source appears.
+    const folder = starFilterMode ? '' : currentFolder, mode = starFilterMode ? 'all' : galleryViewMode;
+    const current = () => scanSession === session && !session.signal.aborted;
+    isScanning = true;
+    manifestFailureNotice = false;
+    scannedFolders = 0; scannedFiles = 0;
+    thumbnailGrid.setAttribute('aria-busy', 'true');
+    btnRefreshGrid.disabled = true; $('btn-sort').disabled = true;
+    $('scan-loading').hidden = false;
+    if (usesPublishedManifest()) resetPersistentManifest({ cacheBust: forceCacheClear });
+    setScanStatus(usesPublishedManifest() ? 'Loading media index…' :
+        (mediaFiles.length || subfolders.length ? 'Refreshing folders…' : 'Scanning folders…'));
+    try {
+        const listing = await scanDirectory(folder, { signal: session.signal, bypassCache: forceCacheClear });
+        // Publish a bounded first batch as soon as the current directory is known.
+        // Recursive discovery and final sorting continue below; viewer refreshes stay atomic.
+        const progressive = mode === 'all' && isGridViewActive && !silent && !starFilterMode;
+        const discovered = new Set(listing.filePaths);
+        let unpublished = 0, lastPublish = 0;
+        const publishDiscovered = async force => {
+            // A higher batch threshold plus a minimum time gap between rebuilds
+            // still bounds how often a publish fires at all; updateGridView()
+            // (below) then decides whether this particular publish can extend
+            // the grid in place instead of a full teardown-and-rebuild.
+            const now = Date.now();
+            if (!progressive || !current() || (!force && (unpublished < 400 || now - lastPublish < 2000))) return;
+            lastPublish = now;
+            const previousMediaFiles = mediaFiles;
+            const preview = Array.from(discovered);
+            mediaFiles = sortMode === 'filename' ? preview.sort(compareFilenames) : preview;
+            subfolders = listing.folderNames;
+            unpublished = 0;
+            showWarning(false);
+            renderBreadcrumb();
+            updateGridView(previousMediaFiles);
+        };
+        if (progressive && listing.filePaths.length) {
+            // The virtual grid remains bounded even if the directory itself is enormous.
+            mediaFiles = listing.filePaths.slice(0, 100);
+            subfolders = listing.folderNames;
+            showWarning(false);
+            renderBreadcrumb();
+            renderGridView();
+        }
+        // Rough determinate progress: the initial listing already tells us how
+        // many top-level sibling folders exist under this album, so completion
+        // of each one's subtree (success or handled failure) can drive a real
+        // percentage instead of leaving the scan status text-only.
+        const totalTopFolders = listing.folderNames.length;
+        let completedTopFolders = 0;
+        if (mode === 'all' && totalTopFolders) setScanProgressBar(0);
+        else setScanProgressBar(null);
+        const result = mode === 'all'
+            ? await scanDirectoryRecursive(folder, new Set(), listing, session.signal, async files => {
+                for (const file of files) if (!discovered.has(file)) { discovered.add(file); unpublished++; }
+                await publishDiscovered(false);
+            }, {
+                bypassCache: forceCacheClear,
+                onTopComplete: () => {
+                    if (!current() || !totalTopFolders) return;
+                    completedTopFolders++;
+                    setScanProgressBar(Math.round((completedTopFolders / totalTopFolders) * 100));
+                }
+            })
+            : { files: listing.filePaths, failedFolders: [] };
+        if (!current()) return;
+        setScanProgressBar(null);
+        await publishDiscovered(true);
+        // A failed descendant is unknown, not deleted. Preserve only its previous files.
+        for (const file of mediaFiles) {
+            if (result.failedFolders.some(path => file.startsWith(currentDirectoryUrl(path))) && !result.files.includes(file)) result.files.push(file);
+        }
+        const sorted = await sortMediaFiles(result.files, sortMode, forceCacheClear, session.signal);
+        if (!current()) return;
+        const displayFiles = starFilterMode
+            ? sorted.filter(file => isStarred(file))
+            : sorted;
+        // Capture live viewer identity after awaits: the user may have advanced meanwhile.
+        const viewed = mediaFiles[currentIndex];
+        const wasGrid = isGridViewActive;
+        const changed = JSON.stringify(displayFiles) !== JSON.stringify(mediaFiles) ||
+            JSON.stringify(listing.folderNames) !== JSON.stringify(subfolders);
+        mediaFiles = displayFiles; subfolders = starFilterMode ? [] : listing.folderNames;
+        const retained = viewed && mediaFiles.includes(viewed);
+        currentIndex = retained ? mediaFiles.indexOf(viewed) : Math.min(currentIndex, Math.max(0, mediaFiles.length - 1));
+        if (forceCacheClear) clearImageBlobCache();
+        showScanFailures(result.failedFolders);
+        failedNavigation = null;
+        missingFolderRecovery = null;
+        const empty = !result.failedFolders.length && mediaFiles.length === 0 &&
+            (subfolders.length === 0 || !controlsEnabled);
+        emptyFolderNotice = Boolean(empty && folder);
+        $('warning-title').textContent = emptyFolderNotice ? 'Album Is Empty' : 'No Media Detected';
+        $('warning-message').textContent = emptyFolderNotice
+            ? 'No supported photos or videos remain in this album.'
+            : (empty && isManifestOnlySource()
+                ? 'The published media index contains no supported media. Regenerate and redeploy the index after adding files.'
+                : 'No supported media found in the selected folder/view.');
+        if (starFilterMode && mediaFiles.length === 0) {
+            $('warning-title').textContent = 'No Starred Media';
+            $('warning-message').textContent = 'Nothing starred yet. Open a photo and tap the star — starred media appears here.';
+        }
+        showWarning(empty);
+        renderBreadcrumb();
+        setScanStatus(result.failedFolders.length ? 'Scan incomplete — some folders unavailable' :
+            `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`, Boolean(result.failedFolders.length));
+        if (!preserveView || (wasGrid && (changed || forceCacheClear)) || !mediaFiles.length) {
+            renderGridView();
+        } else if (!wasGrid && !retained) {
+            enterFullScreenViewer(currentIndex);
+        } else if (!wasGrid) {
+            mediaIndex.textContent = `${currentIndex + 1} / ${mediaFiles.length}`;
+        }
+        savePreferences();
+        return true;
+    } catch (error) {
+        if (!current() || error.name === 'AbortError') return;
+        console.error('Directory scanning error:', error);
+        // Recursive descendant failures are absorbed into failedFolders above.
+        // Only a confirmed missing top-level/current album reaches this branch.
+        if (folder && isMissingFolderError(error)) {
+            handleMissingFolder(folder);
+            return false;
+        }
+        if (isManifestOnlySource() && isPersistentManifestError(error)) {
+            manifestFailureNotice = true;
+            setScanStatus('Published library unavailable', true);
+            showScanFailures([]);
+            $('warning-title').textContent = 'Published Library Unavailable';
+            $('warning-message').textContent = 'The published media index is missing, invalid, or incomplete. Regenerate and redeploy it, then choose Reload Library.';
+            showWarning(true);
+            return false;
+        }
+        setScanStatus('Scan failed — check connection and retry', true);
+        showScanFailures([folder || activeSource.label]);
+        $('warning-title').textContent = 'Could not scan this folder';
+        $('warning-message').textContent = 'Check the connection and directory listing, then choose Scan Again.';
+        if (!mediaFiles.length && !subfolders.length) showWarning(true);
+        return false;
+    } finally {
+        if (scanSession === session) {
+            isScanning = false;
+            thumbnailGrid.setAttribute('aria-busy', 'false');
+            btnRefreshGrid.disabled = false; $('btn-sort').disabled = false;
+            $('scan-loading').hidden = true;
+            setScanProgressBar(null);
+        }
+    }
+}
+
+function setScanStatus(text, isError = false) {
+    if (scanStatus) {
+        scanStatus.textContent = text;
+        scanStatus.classList.toggle('is-error', isError);
+    }
+    $('scan-loading-text').textContent = text;
+}
+
+function setScanProgress(text) {
+    $('scan-loading-text').textContent = text;
+}
+
+// Separate from setScanProgress/setScanStatus (which only ever touch text) so
+// the folder/file-count text updates emitted from inside scanDirectoryRecursive
+// can't accidentally clobber the bar's percentage, or vice versa. A string
+// "busy" shows an indeterminate animated bar (used while an Optimize request
+// is running, since its duration is not known in advance).
+function setScanProgressBar(percent) {
+    const track = $('scan-progress-track');
+    const fill = $('scan-progress-fill');
+    if (!track || !fill) return;
+    if (percent == null || Number.isNaN(percent)) {
+        track.hidden = true;
+        fill.classList.remove('is-indeterminate');
+        track.removeAttribute?.('aria-valuenow');
+        return;
+    }
+    track.hidden = false;
+    if (percent === 'busy') {
+        fill.classList.add('is-indeterminate');
+        fill.style.width = '';
+        track.setAttribute('aria-valuenow', '');
+        return;
+    }
+    fill.classList.remove('is-indeterminate');
+    const value = Math.max(0, Math.min(100, percent));
+    track.setAttribute('aria-valuenow', String(value));
+    fill.style.width = value + '%';
+}
+
+function setMediaLoading(text = '') {
+    $('media-loading').hidden = !text || !controlsEnabled;
+    $('media-loading-text').textContent = text;
+    container.setAttribute('aria-busy', String(Boolean(text)));
+}
+
+function watchThumbnail(element, item, videoThumbnail = false) {
+    const session = gridSession;
+    let timer;
+    item.classList.add('thumb-loading');
+    const finish = () => {
+        clearTimeout(timer);
+        if (session?.controller.signal.aborted || element.resourceActive === false) return;
+        element.thumbnailSettled = true;
+        item.classList.remove('thumb-loading'); element.classList.add('thumb-loaded');
+    };
+    element.onload = finish;
+    if (videoThumbnail) element.onloadeddata = finish;
+    element.onerror = () => {
+        if (element.generatedFallback) {
+            const generatedFallback = element.generatedFallback;
+            element.generatedFallback = null;
+            generatedFallback().catch(() => element.onerror?.());
+            return;
+        }
+        if (element.fallbackSrc) {
+            const fallbackSrc = element.fallbackSrc;
+            element.fallbackSrc = null;
+            if (element.queueImageSource) element.queueImageSource(fallbackSrc);
+            else { element.startDeadline(); element.src = fallbackSrc; }
+            return;
+        }
+        finish();
+        if (session?.controller.signal.aborted || element.resourceActive === false) return;
+        item.classList.add('thumb-error');
+        if (item.failedPreview) return;
+        item.failedPreview = true;
+        const fallback = document.createElement('span');
+        fallback.className = 'thumbnail-unavailable'; fallback.textContent = 'Preview unavailable';
+        item.appendChild(fallback);
+    };
+    // Native lazy images start their deadline only once in preload range.
+    element.startDeadline = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            // Clear the failed request before the error handler starts a fallback.
+            clearMediaSource(element);
+            element.onerror?.();
+        }, MEDIA_TIMEOUT);
+    };
+    element.cancelDeadline = () => clearTimeout(timer);
+    const cleanup = () => {
+        clearTimeout(timer);
+        element.queueImageSource = null;
+        element.thumbnailSettled = false;
+        element.onload = element.onerror = element.onloadeddata = element.onloadedmetadata = null;
+        element.pause?.(); clearMediaSource(element);
+    };
+    element.thumbnailCleanup = cleanup;
+    session?.cleanups.add(cleanup);
+}
+
+function showWarning(show) {
+    warningOverlay.style.display = show ? 'flex' : 'none';
+    if (!show) return;
+    const previous = $('btn-warning-previous');
+    const root = $('btn-warning-root');
+    const recovery = missingFolderRecovery;
+    const manifestState = isManifestOnlySource();
+    const confirmedAlbumState = Boolean(recovery || emptyFolderNotice || manifestFailureNotice || manifestState);
+    previous.textContent = recovery ? 'Parent folder' : 'Previous location';
+    previous.hidden = recovery ? !recovery.parent : warningReturnFolder === null || warningReturnFolder === currentFolder;
+    root.hidden = recovery ? false : !currentFolder;
+    btnRetryWarning.hidden = Boolean(recovery);
+    btnRetryWarning.textContent = manifestState ? 'Reload Library' : 'Scan Again';
+    $('warning-source-summary').hidden = confirmedAlbumState;
+    $('warning-server-help').hidden = confirmedAlbumState;
+    $('warning-offline-note').hidden = confirmedAlbumState;
+    $('warning-open-source').hidden = confirmedAlbumState;
+    $('warning-open-source').href = activeSource.url;
+}
+function isPhotoActive() { return mediaFiles[currentIndex] ? isImageFile(mediaFiles[currentIndex]) && !reclassifiedVideoActive : false; }
+
+function renderBreadcrumb() {
+    breadcrumb.innerHTML = '';
+    $('source-root-label').textContent = activeSource.label;
+
+    const parts = currentFolder.split('/').filter(Boolean);
+    $('breadcrumb-root-separator').hidden = parts.length === 0;
+    $('gallery-path-bar').hidden = parts.length === 0;
+    let running = '';
+    const ancestors = parts.slice(0, -1);
+    $('current-path-separator').hidden = ancestors.length === 0;
+    ancestors.forEach((part, index) => {
+        const sep = document.createElement('span');
+        const middle = index > 0 && index < ancestors.length - 1;
+        sep.className = `crumb-separator${middle ? ' crumb-middle' : ''}`;
+        sep.textContent = '›';
+        if (index > 0) breadcrumb.appendChild(sep);
+        running = running ? `${running}/${part}` : part;
+        const target = running;
+        const crumb = document.createElement('button');
+        crumb.className = `crumb breadcrumb-segment${index === 0 ? ' crumb-first' : middle ? ' crumb-middle' : ' crumb-tail'}`;
+        crumb.textContent = part;
+        crumb.addEventListener('click', () => navigateToFolder(target));
+        breadcrumb.appendChild(crumb);
+        if (index === 0 && ancestors.length > 2) {
+            const ellipsis = document.createElement('span');
+            ellipsis.className = 'crumb-ellipsis';
+            ellipsis.textContent = '› …';
+            ellipsis.setAttribute('aria-hidden', 'true');
+            breadcrumb.appendChild(ellipsis);
+        }
+    });
+    if (galleryViewMode === 'all' || starFilterMode) {
+        gridPath.textContent = starFilterMode ? 'Starred' : (currentFolder ? parts[parts.length - 1] : 'All media');
+    } else {
+        gridPath.textContent = parts[parts.length - 1] || 'Sorted by folder';
+    }
+    gridPath.title = currentFolder || activeSource.label;
+    gridPath.setAttribute('aria-current', currentFolder ? 'location' : 'false');
+    updateGalleryHeaderLayout();
+}
+
+async function navigateToFolder(folder, { historyMode = 'push' } = {}) {
+    scanSession?.abort();
+    stopViewerSession(); stopGridSession();
+    missingFolderRecovery = null;
+    emptyFolderNotice = false;
+    btnRetryWarning.hidden = false;
+    const previousFolder = currentFolder;
+    warningReturnFolder = previousFolder;
+    gridReturn = null;
+    currentFolder = folder;
+    gridViewContainer.scrollTop = 0;
+    currentIndex = 0;
+    isGridViewActive = true;
+    syncViewerModal();
+    stopSlideshow();
+    const succeeded = await loadGallery({ preserveView: false });
+    if (succeeded === false && currentFolder === folder) {
+        failedNavigation = folder;
+        currentFolder = previousFolder;
+        renderBreadcrumb(); renderGridView();
+        if (historyMode === 'none') updateFolderHistory(previousFolder, 'replace');
+        return false;
+    }
+    if (succeeded !== false && historyMode !== 'none' && folder !== previousFolder) {
+        updateFolderHistory(folder, historyMode);
+    }
+    return succeeded !== false;
+}
+
+// Called from loadGallery's publishDiscovered instead of renderGridView()
+// directly. Progressive discovery only ever adds files — the `discovered`
+// Set it publishes from never shrinks — so mediaFiles is always
+// previousMediaFiles plus new entries, though sorting can interleave those
+// new entries anywhere (filename mode re-sorts the whole preview on every
+// publish). Appending the tail without touching existing DOM tiles is only
+// correct if every already-rendered index is unchanged between the old and
+// new arrays — checked directly here rather than re-deriving it from sort
+// rules, so this stays correct regardless of sort mode or future changes to
+// how previews are ordered.
+function updateGridView(previousMediaFiles) {
+    const session = gridSession;
+    if (!session?.appendTiles || session.folder !== currentFolder || session.mode !== galleryViewMode ||
+        !isGridViewActive || !gridVirtualizer || mediaFiles.length <= previousMediaFiles.length) {
+        renderGridView();
+        return;
+    }
+    const boundary = Math.min(gridVirtualizer.end, previousMediaFiles.length);
+    for (let i = 0; i < boundary; i++) {
+        if (previousMediaFiles[i] !== mediaFiles[i]) { renderGridView(); return; }
+    }
+    session.appendTiles(previousMediaFiles.length, mediaFiles.length);
+}
+
+function renderGridView() {
+    setViewerOptionsOpen(false);
+    setGridOptionsOpen(false);
+    stopViewerSession();
+    const session = startGridSession();
+    const returnPosition = !isGridViewActive && gridReturn &&
+        gridReturn.folder === currentFolder && gridReturn.view === galleryViewMode ? gridReturn : null;
+    let returnTile = null;
+    setMediaLoading();
+    if (!controlsEnabled) {
+        gridViewContainer.style.display = 'none';
+        if (mediaFiles.length) enterFullScreenViewer(currentIndex);
+        else {
+            mediaLoadId++;
+            stopSlideshow();
+            video.pause();
+            viewport.style.display = 'none';
+        }
+        return;
+    }
+    mediaLoadId++;
+    mediaFailed = false;
+    videoErrorOverlay.style.display = 'none';
+    isGridViewActive = true;
+    syncViewerModal();
+    thumbnailGrid.innerHTML = '';
+    const total = mediaFiles.length;
+    const albums = galleryViewMode === 'folders' ? subfolders.length : 0;
+    gridCount.textContent = starFilterMode
+        ? `${total} Starred File${total === 1 ? '' : 's'}`
+        : galleryViewMode === 'all'
+            ? `${total} File${total === 1 ? '' : 's'} • All Folders`
+            : `${albums ? `${albums} Album${albums === 1 ? '' : 's'} • ` : ''}${total} File${total === 1 ? '' : 's'}`;
+
+    // Album cards first when browsing by folder.
+    const observeAlbum = galleryViewMode === 'folders' ? startAlbumPreviews() : null;
+    if (galleryViewMode === 'folders') subfolders.forEach(folder => {
+        const item = document.createElement('button');
+        item.className = 'grid-item album-card';
+        item.type = 'button';
+        const albumFolder = currentFolder ? `${currentFolder}/${folder}` : folder;
+        item.dataset.albumFolder = albumFolder;
+        item.setAttribute('aria-label', `Open album ${folder}`);
+        item.innerHTML = `
+            <div class="album-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="54" height="54"><path fill="currentColor" d="M10 4H2c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h20c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-10l-2-2z"/></svg>
+            </div>
+            <div class="album-name">${escapeHtml(folder)}</div>
+            <div class="album-subtitle">Open album</div>`;
+        item.addEventListener('click', () => navigateToFolder(albumFolder));
+        thumbnailGrid.appendChild(item);
+        observeAlbum(item);
+    });
+
+    const observed = new Map();
+    const updateThumbnail = (el, visible) => {
+        const state = observed.get(el);
+        if (!state) return;
+        if (!visible) {
+            if (!state.heic && (!el.thumbnailSettled || el.tagName === 'VIDEO') && state.controller) {
+                el.resourceActive = false;
+                el.cancelDeadline();
+                state.controller.abort(); state.controller = null;
+                clearMediaSource(el);
+                el.classList.remove('thumb-loaded');
+            }
+            if (state.heic) {
+                el.resourceActive = false;
+                el.cancelDeadline();
+                clearMediaSource(el); state.controller?.abort(); state.controller = null;
+                el.classList.remove('thumb-loaded');
+                state.video?.thumbnailCleanup?.();
+                if (state.video) session.cleanups.delete(state.video.thumbnailCleanup);
+                state.video?.remove(); state.video = null;
+                if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+                state.objectUrl = null; el.style.display = '';
+            }
+            return;
+        }
+        if (state.controller) return;
+        el.resourceActive = true;
+        const owner = new AbortController();
+        state.controller = owner;
+        el.thumbnailSettled = false;
+        if (el.tagName === 'VIDEO') {
+            queueVideoThumbnail(el, state.file, owner.signal);
+            return;
+        }
+        el.queueImageSource = source => queueNativeImageSource(el, source, owner.signal, {
+            priority: NATIVE_IMAGE_PRIORITY.grid,
+            onStart: el.startDeadline
+        });
+        if (state.heic) {
+            const generated = persistentThumbnailUrl(state.file);
+            if (generated) el.queueImageSource(generated);
+            else el.onerror?.();
+        } else {
+            const generated = persistentThumbnailUrl(state.file);
+            el.fallbackSrc = generated ? state.file : null;
+            el.queueImageSource(generated || state.file);
+        }
+    };
+    // rootMargin used by both the IntersectionObserver below and the manual
+    // catch-up check in createRange() — keep these in sync, they must agree.
+    const OBSERVER_LOAD_MARGIN = 300;
+    const isWithinLoadMargin = el => {
+        const container = gridViewContainer.getBoundingClientRect();
+        const rect = el.getBoundingClientRect();
+        return rect.bottom >= container.top - OBSERVER_LOAD_MARGIN &&
+            rect.top <= container.bottom + OBSERVER_LOAD_MARGIN &&
+            rect.right >= container.left - OBSERVER_LOAD_MARGIN &&
+            rect.left <= container.right + OBSERVER_LOAD_MARGIN;
+    };
+    if ('IntersectionObserver' in window) session.observer = new IntersectionObserver(entries => {
+        if (session.controller.signal.aborted) return;
+        entries.forEach(entry => updateThumbnail(entry.target, entry.isIntersecting));
+    }, { root: gridViewContainer, rootMargin: `${OBSERVER_LOAD_MARGIN}px` });
+    const observeImage = (el, file, heic = false, item = null) => {
+        const state = { file, heic, item, controller: null, video: null, objectUrl: null, cleanup: null };
+        state.cleanup = () => {
+            state.controller?.abort(); state.video?.thumbnailCleanup?.();
+            if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+        };
+        observed.set(el, state);
+        session.cleanups.add(state.cleanup);
+        if (session.observer) session.observer.observe(el);
+        else updateThumbnail(el, true);
+    };
+
+    const createMediaTile = index => {
+        const file = mediaFiles[index];
+        const filename = decodeURIComponent(file.split('/').pop());
+        const item = document.createElement('button');
+        item.className = 'grid-item media-tile';
+        item.type = 'button';
+        item.dataset.mediaIndex = String(index);
+        item.setAttribute('aria-label', `Open ${filename}`);
+        if (returnPosition?.file === file) returnTile = item;
+
+        if (isVideoFile(file)) {
+            const vid = document.createElement('video');
+            watchThumbnail(vid, item, true);
+            vid.preload = 'none';
+            vid.disablePictureInPicture = true;
+            vid.muted = true;
+            vid.playsInline = true;
+            observeImage(vid, file, false, item);
+            item.mediaElement = vid;
+            item.appendChild(vid);
+            const badge = document.createElement('div');
+            badge.className = 'video-badge';
+            badge.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
+            item.appendChild(badge);
+        } else if (isHeicFile(file)) {
+            const imgEl = document.createElement('img');
+            watchThumbnail(imgEl, item);
+            imgEl.alt = filename;
+            imgEl.draggable = false;
+            imgEl.decoding = 'async';
+            imgEl.dataset.heicSrc = file;
+            imgEl.className = 'heic-thumb';
+            observeImage(imgEl, file, true, item);
+            item.mediaElement = imgEl;
+            item.appendChild(imgEl);
+            const fallback = document.createElement('div');
+            fallback.className = 'heic-fallback';
+            fallback.textContent = 'HEIC';
+            item.appendChild(fallback);
+        } else {
+            const imgEl = document.createElement('img');
+            watchThumbnail(imgEl, item);
+            observeImage(imgEl, file, false, item);
+            imgEl.alt = filename;
+            imgEl.draggable = false;
+            imgEl.loading = 'eager';
+            imgEl.decoding = 'async';
+            item.mediaElement = imgEl;
+            item.appendChild(imgEl);
+        }
+
+        const caption = document.createElement('div');
+        caption.className = 'grid-item-caption';
+        if (galleryViewMode === 'all' || starFilterMode) {
+            let relative = settingsApi.relativeMediaPath(activeSource, file);
+            if (currentFolder) {
+                const prefix = `${currentFolder}/`;
+                if (relative.startsWith(prefix)) relative = relative.slice(prefix.length);
+            }
+            caption.textContent = relative;
+        } else {
+            caption.textContent = filename;
+        }
+        item.appendChild(caption);
+        item.addEventListener('click', async () => {
+            const current = mediaFiles.indexOf(file);
+            if (current < 0) return;
+            // Generated previews can outlive moved/deleted originals. Verify
+            // only on activation, never by probing every tile during a scan.
+            if (persistentThumbnailUrl(file)) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), DIRECTORY_TIMEOUT);
+                try {
+                    const response = await fetch(file, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+                    if (response.status === 404 || response.status === 410) {
+                        persistentThumbnailUrls.delete(file);
+                        modifiedDateCache.delete(file);
+                        mediaFiles = mediaFiles.filter(candidate => candidate !== file);
+                        setScanStatus(`Removed unavailable file: ${filename}`, true);
+                        renderGridView();
+                        return;
+                    }
+                } catch {
+                    // Unsupported HEAD, CORS, timeout, and offline failures are
+                    // inconclusive; preserve existing open-and-recover behavior.
+                } finally { clearTimeout(timer); }
+            }
+            const latest = mediaFiles.indexOf(file);
+            if (latest >= 0) enterFullScreenViewer(latest);
+        });
+        const starred = isStarred(file);
+        const starButton = document.createElement('button');
+        starButton.type = 'button';
+        starButton.className = 'tile-star';
+        starButton.setAttribute('aria-label', starred ? `Unstar ${filename}` : `Star ${filename}`);
+        starButton.setAttribute('aria-pressed', String(starred));
+        starButton.title = starred ? 'Remove star' : 'Star';
+        starButton.innerHTML =
+            '<span class="star-off-icon"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span>' +
+            '<span class="star-on-icon" hidden><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></span>';
+        starButton.addEventListener('click', () => {
+            toggleStarred(file);
+            const nowStarred = isStarred(file);
+            starButton.setAttribute('aria-pressed', String(nowStarred));
+            starButton.setAttribute('aria-label', nowStarred ? `Unstar ${filename}` : `Star ${filename}`);
+            starButton.querySelector('.star-on-icon').hidden = !nowStarred;
+            starButton.querySelector('.star-off-icon').hidden = nowStarred;
+            if (starFilterMode && !nowStarred) {
+                // Unstarring from the starred view removes the tile immediately.
+                mediaFiles = mediaFiles.filter(candidate => candidate !== file);
+                renderGridView();
+            } else {
+                updateControlStates();
+            }
+        });
+        // Wrapping keeps the clickable tile and its clickable star as sibling
+        // buttons (nested interactive elements are invalid HTML) while the
+        // wrapper itself occupies the grid cell.
+        const slot = document.createElement('div');
+        slot.className = 'media-tile-slot';
+        slot.appendChild(item);
+        slot.appendChild(starButton);
+        slot.mediaTile = item;
+        return slot;
+    };
+
+    const virtualized = mediaFiles.length > GRID_BATCH_SIZE;
+    const virtualWindow = document.createElement('div');
+    virtualWindow.className = 'virtual-window';
+    let topSpacer = null, bottomSpacer = null;
+    if (virtualized) {
+        topSpacer = document.createElement('div');
+        topSpacer.className = 'virtual-spacer';
+        topSpacer.setAttribute('aria-hidden', 'true');
+        bottomSpacer = document.createElement('div');
+        bottomSpacer.className = 'virtual-spacer';
+        bottomSpacer.setAttribute('aria-hidden', 'true');
+        thumbnailGrid.appendChild(topSpacer);
+    }
+    thumbnailGrid.appendChild(virtualWindow);
+    if (virtualized) thumbnailGrid.appendChild(bottomSpacer);
+    const renderedTiles = new Map();
+    let renderedStart = 0, renderedEnd = 0;
+    const runCleanup = cleanup => {
+        if (!cleanup) return;
+        session.cleanups.delete(cleanup);
+        cleanup();
+    };
+    const releaseTile = (index, item) => {
+        const tile = item.mediaTile || item;
+        const element = tile.mediaElement;
+        if (element) {
+            const state = observed.get(element);
+            session.observer?.unobserve?.(element);
+            runCleanup(state?.cleanup);
+            runCleanup(element.thumbnailCleanup);
+            observed.delete(element);
+            element.resourceActive = false;
+        }
+        if (document.activeElement?.closest?.('.media-tile') === tile) tile.blur?.();
+        item.remove();
+        renderedTiles.delete(index);
+    };
+    const createRange = (start, end) => {
+        const fragment = document.createDocumentFragment();
+        const created = [];
+        for (let index = start; index < end; index++) {
+            const item = createMediaTile(index);
+            renderedTiles.set(index, item);
+            fragment.appendChild(item);
+            created.push(item);
+        }
+        // The elements above are still detached (or only in this fragment) at
+        // this point, so getBoundingClientRect() on them now would be
+        // meaningless — this must wait until after the caller has actually
+        // attached the fragment to the live DOM. requestAnimationFrame fires
+        // after the current synchronous script (including that attachment)
+        // completes, so by the time this runs the geometry is real.
+        if (session.observer) requestAnimationFrame(() => {
+            if (session.controller.signal.aborted) return;
+            for (const item of created) {
+                const element = item.mediaElement;
+                if (element && observed.has(element) && !element.resourceActive && isWithinLoadMargin(item)) {
+                    updateThumbnail(element, true);
+                }
+            }
+        });
+        return fragment;
+    };
+    // These two scale factors (0.778, 0.667) are the single source of truth
+    // shared with styles.css's max-width:900px / max-width:560px breakpoints —
+    // change one, change the other, or the CSS grid and this virtualizer's
+    // spacer/row-height math will silently disagree on column count.
+    const gridMetrics = () => {
+        const width = thumbnailGrid.clientWidth || gridViewContainer.clientWidth || 1200;
+        const scale = width <= 560 ? 0.667 : width <= 900 ? 0.778 : 1;
+        // This is the same fractional minimum used by the CSS minmax() rule,
+        // keeping virtual spacer rows aligned with the rendered column count.
+        const min = gridTileMinPx * scale;
+        const gap = width <= 900 ? 12 : 18;
+        const columns = Math.max(1, Math.floor((width + gap) / (min + gap)));
+        const card = Math.max(min, (width - gap * (columns - 1)) / columns);
+        return { columns, rowHeight: card + gap };
+    };
+    const estimateSpacerHeight = count => {
+        if (!count) return 0;
+        const { columns, rowHeight } = gridMetrics();
+        return Math.ceil(count / columns) * rowHeight;
+    };
+    const renderMediaWindow = (start, end) => {
+        const preservedScrollTop = gridViewContainer.scrollTop;
+        if (virtualized) {
+            topSpacer.hidden = !start;
+            topSpacer.style.height = start ? estimateSpacerHeight(start) + 'px' : '0px';
+            bottomSpacer.hidden = end >= mediaFiles.length;
+            bottomSpacer.style.height = end < mediaFiles.length
+                ? estimateSpacerHeight(mediaFiles.length - end) + 'px'
+                : '0px';
+        }
+        const overlaps = renderedTiles.size && start < renderedEnd && end > renderedStart;
+        if (!overlaps) {
+            for (const [index, item] of [...renderedTiles]) releaseTile(index, item);
+            virtualWindow.replaceChildren(createRange(start, end));
+        } else {
+            for (const [index, item] of [...renderedTiles]) {
+                if (index < start || index >= end) releaseTile(index, item);
+            }
+            if (start < renderedStart) {
+                const prependEnd = Math.min(renderedStart, end);
+                virtualWindow.insertBefore(createRange(start, prependEnd), virtualWindow.firstChild);
+            }
+            if (end > renderedEnd) {
+                const appendStart = Math.max(renderedEnd, start);
+                virtualWindow.appendChild(createRange(appendStart, end));
+            }
+        }
+        gridViewContainer.scrollTop = preservedScrollTop;
+        renderedStart = start;
+        renderedEnd = end;
+        gridVirtualizer.start = start;
+        gridVirtualizer.end = end;
+    };
+    const targetIndex = returnPosition?.file ? mediaFiles.indexOf(returnPosition.file) : -1;
+    const initialStart = targetIndex >= 0
+        ? Math.max(0, Math.floor(targetIndex / GRID_BATCH_SIZE) * GRID_BATCH_SIZE - GRID_BATCH_SIZE)
+        : 0;
+    gridVirtualizer = {
+        start: initialStart,
+        end: Math.min(mediaFiles.length, initialStart +
+            (virtualized ? (targetIndex >= 0 ? GRID_WINDOW_SIZE : GRID_BATCH_SIZE) : mediaFiles.length)),
+        jumpToStart() {
+            document.activeElement?.closest?.('.grid-item')?.blur?.();
+            if (virtualized) renderMediaWindow(0, Math.min(mediaFiles.length, GRID_BATCH_SIZE));
+            gridViewContainer.scrollTop = 0;
+        },
+        jumpToEnd() {
+            document.activeElement?.closest?.('.grid-item')?.blur?.();
+            if (virtualized) {
+                const start = Math.max(0, mediaFiles.length - GRID_WINDOW_SIZE);
+                renderMediaWindow(start, mediaFiles.length);
+            }
+            // Read scrollHeight after replacing the window so one keypress lands
+            // at the final geometry instead of relying on scroll anchoring.
+            gridViewContainer.scrollTop = gridViewContainer.scrollHeight;
+        },
+        update() {
+            if (!virtualized || !isGridViewActive || session.controller.signal.aborted) return;
+            const { columns, rowHeight } = gridMetrics();
+            const localTop = Math.max(0, gridViewContainer.scrollTop - (thumbnailGrid.offsetTop || 0));
+            const firstVisible = Math.min(mediaFiles.length - 1,
+                Math.max(0, Math.floor(localTop / rowHeight) * columns));
+            const edgeBuffer = Math.floor(GRID_BATCH_SIZE / 2);
+            if (firstVisible >= this.start + edgeBuffer && firstVisible < this.end - edgeBuffer) return;
+            let start = Math.max(0,
+                Math.floor(firstVisible / GRID_BATCH_SIZE) * GRID_BATCH_SIZE - GRID_BATCH_SIZE);
+            start = Math.min(start, Math.max(0, mediaFiles.length - GRID_WINDOW_SIZE));
+            const end = Math.min(mediaFiles.length, start + GRID_WINDOW_SIZE);
+            if (start !== this.start || end !== this.end) renderMediaWindow(start, end);
+        }
+    };
+    renderMediaWindow(gridVirtualizer.start, gridVirtualizer.end);
+
+    // Called by updateGridView() — defined outside this closure — when a
+    // progressive-scan publish only ever adds files to the tail of
+    // mediaFiles (see updateGridView for the correctness check that
+    // guarantees this). Grows the DOM/spacer incrementally instead of the
+    // full teardown-and-rebuild this function normally does, so
+    // already-rendered, already-loaded thumbnails are left completely
+    // untouched — this is what fixes the progressive-scan flicker.
+    session.appendTiles = (previousLength, newLength) => {
+        if (!virtualized && newLength > GRID_BATCH_SIZE) {
+            // This session started small enough to skip virtualization but
+            // has now grown past the threshold. That transition needs a
+            // full rebuild to correctly re-establish windowing; this only
+            // happens once, right after the first small progressive batch.
+            renderGridView();
+            return;
+        }
+        gridCount.textContent = `${newLength} File${newLength === 1 ? '' : 's'} • All Folders`;
+        if (!virtualized) {
+            virtualWindow.appendChild(createRange(previousLength, newLength));
+            gridVirtualizer.end = newLength;
+            return;
+        }
+        if (gridVirtualizer.end < previousLength) {
+            // Newest items land below the current window entirely — nothing
+            // rendered needs to change, just grow the spacer to represent them.
+            const remaining = newLength - gridVirtualizer.end;
+            bottomSpacer.hidden = remaining <= 0;
+            bottomSpacer.style.height = remaining > 0 ? estimateSpacerHeight(remaining) + 'px' : '0px';
+            return;
+        }
+        // The window's tail already reaches the old end — newest items are
+        // visible or about to scroll into view. Grow in place if there's
+        // still room under the GRID_WINDOW_SIZE budget (existing tiles
+        // untouched). If the window is already at capacity, slide it
+        // forward via renderMediaWindow's existing prepend/release logic —
+        // the same path scroll-driven updates already use — which only
+        // releases tiles at the *front* of the window, farthest from the
+        // tail the user is actively scrolled toward.
+        const cappedEnd = Math.min(newLength, gridVirtualizer.start + GRID_WINDOW_SIZE);
+        if (cappedEnd > gridVirtualizer.end) {
+            virtualWindow.appendChild(createRange(gridVirtualizer.end, cappedEnd));
+            gridVirtualizer.end = cappedEnd;
+            const remaining = newLength - gridVirtualizer.end;
+            bottomSpacer.hidden = remaining <= 0;
+            bottomSpacer.style.height = remaining > 0 ? estimateSpacerHeight(remaining) + 'px' : '0px';
+        } else {
+            renderMediaWindow(Math.max(0, newLength - GRID_WINDOW_SIZE), newLength);
+        }
+    };
+
+    gridViewContainer.style.display = 'flex';
+    if (returnPosition) {
+        gridViewContainer.scrollTop = returnPosition.scrollTop;
+        if (returnTile) {
+            const tileRect = returnTile.getBoundingClientRect?.();
+            const gridRect = gridViewContainer.getBoundingClientRect?.();
+            if (tileRect && gridRect && (tileRect.top < gridRect.top || tileRect.bottom > gridRect.bottom)) {
+                returnTile.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+            }
+            returnTile.focus?.({ preventScroll: true });
+            returnTile.classList.add('returned-tile');
+            setTimeout(() => returnTile.classList.remove('returned-tile'), 1800);
+        }
+        gridReturn = null;
+    }
+    viewport.style.display = 'none';
+    $('overlay-header').style.display = 'none';
+    navLeft.style.display = 'none';
+    navRight.style.display = 'none';
+    progressContainer.style.display = 'none';
+    helpHint.style.display = 'none';
+    video.pause();
+    cancelSlideshowTimer();
+    savePreferences();
+}
+
+function enterFullScreenViewer(index) {
+    if (!mediaFiles.length) return;
+    const openingViewer = isGridViewActive;
+    if (openingViewer) stopGridSession();
+    if (openingViewer && mediaFiles[index]) gridReturn = {
+        folder: currentFolder, view: galleryViewMode,
+        file: mediaFiles[index], scrollTop: gridViewContainer.scrollTop || 0
+    };
+    isGridViewActive = false;
+    syncViewerModal();
+    // Barely the grid is KEPT rendered (not display:none) so the fixed, blurred
+    // viewer-backdrop has real page content behind it to blur — giving the
+    // captioning-style blurred transparency around the image. The backdrop's
+    // pointer-events:auto keeps the grid inert while the viewer is open.
+    viewport.style.display = 'flex';
+    $('overlay-header').style.display = 'flex';
+    navLeft.style.display = 'flex';
+    navRight.style.display = 'flex';
+    progressContainer.style.display = 'block';
+    helpHint.style.display = 'block';
+    showMedia(index);
+    if (openingViewer) {
+        showUI();
+        // Auto-open the details panel so the caption / SD prompt / ComfyUI
+        // workflow for the opened image are visible immediately.
+        setInfoPanel(true);
+    }
+}
+
+function showMedia(index) {
+    if (!mediaFiles.length) return;
+    stopViewerSession();
+    const session = { controller: new AbortController(), timer: null, progress: 0 };
+    viewerSession = session;
+    const loadId = ++mediaLoadId;
+    const isCurrent = () => loadId === mediaLoadId && !isGridViewActive && !session.controller.signal.aborted;
+    const clearWatchdog = () => { clearTimeout(session.timer); session.timer = null; };
+    const watch = () => {
+        if (session.timer) return;
+        session.timer = setTimeout(() => {
+            if (isCurrent() && !mediaFailed) showMediaError('timeout', mediaFiles[currentIndex], resilience.timeoutError('Media loading stalled'));
+        }, MEDIA_TIMEOUT);
+    };
+    mediaFailed = false;
+    imageReady = false;
+    reclassifiedVideoActive = false;
+    cancelSlideshowTimer();
+    currentIndex = (index + mediaFiles.length) % mediaFiles.length;
+    const filepath = mediaFiles[currentIndex];
+    const filename = decodeURIComponent(filepath.split('/').pop());
+    const displayName = galleryViewMode === 'all' || starFilterMode
+        ? settingsApi.relativeMediaPath(activeSource, filepath)
+        : filename;
+
+    imageRotation = 0;
+    resetZoomAndPan();
+    applyImageRotation();
+    setMediaLoading(isHeicFile(filepath) ? 'Preparing HEIC image…' : isImageFile(filepath) ? 'Loading image…' : 'Loading video…');
+    videoErrorOverlay.style.display = 'none';
+    img.onload = null; img.onerror = null; img.style.display = 'none'; img.src = '';
+    clearFitSize();
+    video.onended = null; video.ontimeupdate = null; video.onerror = null;
+    video.onwaiting = null; video.onstalled = null; video.oncanplay = null; video.onplaying = null;
+    video.style.display = 'none'; video.pause(); video.src = '';
+    mediaTitle.textContent = displayName;
+    img.alt = filename;
+    mediaIndex.textContent = `${currentIndex + 1} / ${mediaFiles.length}`;
+    updateMediaActions(filepath, filename);
+    updateViewerStarState();
+    // Always read caption / SD prompt / ComfyUI workflow for the shown file so
+    // the details panel is populated (it auto-opens in enterFullScreenViewer).
+    loadMediaMetadata(filepath);
+
+    const playVideoSource = (source, livePhoto = false, objectUrl = null) => {
+        if (!isCurrent()) { if (objectUrl) URL.revokeObjectURL(objectUrl); return; }
+        clearWatchdog();
+        img.onload = null; img.onerror = null; img.src = ''; img.style.display = 'none';
+        container.classList.remove('grab-mode');
+        reclassifiedVideoActive = livePhoto;
+        if (livePhoto) {
+            mediaTitle.textContent = `${displayName} (Live Photo motion)`;
+            updateMediaActions(filepath, filename, true);
+        }
+        if (objectUrl) session.controller.signal.addEventListener('abort', () => URL.revokeObjectURL(objectUrl), { once: true });
+        watch();
+        video.src = source;
+        video.style.display = 'block';
+        video.controls = controlsEnabled && !tvModeEnabled;
+        video.muted = !controlsEnabled;
+        video.onwaiting = video.onstalled = () => { if (isCurrent() && !mediaFailed && !video.paused) { setMediaLoading('Buffering video…'); watch(); } };
+        video.onpause = clearWatchdog;
+        video.oncanplay = video.onplaying = () => { if (isCurrent() && !mediaFailed) { clearWatchdog(); setMediaLoading(); } };
+        video.onerror = () => { if (isCurrent()) showMediaError(livePhoto ? 'live-photo' : 'video', filepath, video.error); };
+        video.play().catch(err => {
+            if (isCurrent() && !mediaFailed && err.name !== 'AbortError') showMediaError(livePhoto ? 'live-photo' : 'video', filepath, err);
+        });
+        video.onended = () => { if (isCurrent() && slideshowPlaying) nextSlideshowMedia(); };
+        video.ontimeupdate = () => {
+            if (!isCurrent()) return;
+            if (video.currentTime !== session.progress) { session.progress = video.currentTime; clearWatchdog(); if (!video.paused) watch(); }
+            if (slideshowPlaying && video.duration) progressBar.style.width = `${(video.currentTime / video.duration) * 100}%`;
+        };
+        cancelSlideshowTimer();
+        progressBar.style.width = '0%';
+    };
+
+    if (isImageFile(filepath)) {
+        img.classList.remove('mode-fit', 'mode-original');
+        img.classList.add(imageMode === 'fit' ? 'mode-fit' : 'mode-original');
+        container.classList.add('grab-mode');
+        img.onload = () => {
+            if (!isCurrent() || mediaFailed) return;
+            clearWatchdog();
+            imageReady = true;
+            btnRotate.disabled = false;
+            const clipboardAvailable = imageClipboardAvailable();
+            btnCopyLink.hidden = !showCopyButton || !clipboardAvailable;
+            if (btnCopyFilename) btnCopyFilename.hidden = btnCopyLink.hidden;
+            btnCopyLink.disabled = !showCopyButton || !clipboardAvailable;
+            if (btnCopyFilename) btnCopyFilename.disabled = !showCopyButton || !clipboardAvailable;
+            btnCopyLink.title = clipboardAvailable ? 'Copy displayed image' : 'Copy Image requires HTTPS or a trusted local context';
+            setMediaLoading();
+            applyFitSize();
+            img.style.display = 'block'; mediaTitle.textContent = displayName;
+            applyImageRotation();
+            if (slideshowPlaying) startSlideshowTimer();
+        };
+        img.onerror = async () => {
+            if (!isCurrent()) return;
+            const sniffed = await sniffContainer(filepath, session.controller.signal).catch(error => {
+                if (error.name !== 'AbortError') console.warn('FolderFrame: media sniff failed.', filepath, error);
+                return null;
+            });
+            if (!isCurrent()) return;
+            if (sniffed?.container === 'quicktime') playVideoSource(filepath, true);
+            else showMediaError('image', filepath);
+        };
+
+        if (isHeicFile(filepath)) {
+            mediaTitle.textContent = `${displayName} (Preparing…)`;
+            getSpecialImageURL(filepath, session.controller.signal)
+                .then(url => {
+                    if (isCurrent()) queueNativeImageSource(img, url, session.controller.signal, {
+                        priority: NATIVE_IMAGE_PRIORITY.viewer, onStart: watch
+                    });
+                })
+                .catch(err => {
+                    if (!isCurrent() || err.name === 'AbortError') return;
+                    if (isQuickTimeReclassification(err)) {
+                        const objectUrl = URL.createObjectURL(new Blob([err.data], { type: 'video/quicktime' }));
+                        playVideoSource(objectUrl, true, objectUrl);
+                        return;
+                    }
+                    console.error('HEIC/HEIF image handling failed:', err);
+                    if (isCurrent()) showMediaError('heic', filepath, err);
+                });
+        } else {
+            queueNativeImageSource(img, filepath, session.controller.signal, {
+                priority: NATIVE_IMAGE_PRIORITY.viewer, onStart: watch
+            });
+        }
+    } else {
+        playVideoSource(filepath);
+    }
+    savePreferences();
+}
+
+function showMediaError(kind, filepath, error) {
+    stopViewerSession();
+    img.onload = null; img.onerror = null; img.src = '';
+    video.onerror = null; video.onwaiting = null; video.onstalled = null;
+    video.pause(); video.src = '';
+    setMediaLoading();
+    mediaFailed = true;
+    cancelSlideshowTimer();
+    progressBar.style.width = '0%';
+    img.style.display = 'none';
+    video.pause();
+    video.style.display = 'none';
+    let title = 'This image could not be opened';
+    let message = 'The file may be unavailable, damaged, or in a format this browser cannot display.';
+    let guidance = 'Retry after checking your connection, or open the original file to check it. Exporting a new JPEG or PNG copy may help.';
+    if (kind === 'live-photo') {
+        title = 'This Apple Live Photo motion clip could not be played';
+        message = 'This file is QuickTime / HEVC video even though its filename looks like an image. This browser may not support its HEVC codec.';
+        guidance = 'Open the original in an Apple-compatible player, or view the matching still image if it is present. Your original file is unchanged.';
+    } else if (kind === 'heic' || (isHeicFile(filepath) && kind !== 'video')) {
+        title = 'This HEIC / HEIF image could not be opened';
+        message = 'FolderFrame could not prepare this image for your browser. The file may use an unsupported HEIC variant or be damaged.';
+        guidance = 'Try opening the original in your photo app and exporting a JPEG or PNG copy. Your original file is unchanged.';
+        if (error?.message === 'HEIC decoder library did not load') {
+            message = 'The HEIC decoder is unavailable.';
+            guidance = 'Reload the page. If this continues, check that heic2any.min.js is hosted beside index.html and is not blocked.';
+        } else if (/HTTP|fetch|network/i.test(error?.message || '')) {
+            message = 'The image could not be downloaded.';
+            guidance = 'Check your connection and that the file is still available, then retry.';
+        }
+    } else if (kind === 'video') {
+        title = 'This video could not be played';
+        message = 'The video format may be unsupported or the file may be unavailable.';
+        guidance = 'Open the original in a video player to check it. For broader browser compatibility, export an MP4 copy using H.264 video and AAC audio.';
+        if (error?.name === 'NotAllowedError') {
+            title = 'Your browser paused video playback';
+            message = 'Automatic playback was blocked. This does not mean the video is broken.';
+            guidance = 'Choose Retry to start playback with a click. Embedded pages may also need permission to autoplay.';
+        } else if (error?.code === 2) {
+            message = 'The video download was interrupted by a network error.';
+            guidance = 'Check your connection and that the file is still available, then retry.';
+        } else if (error?.code === 1) {
+            message = 'Video loading was interrupted.';
+            guidance = 'Choose Retry to load the video again.';
+        } else if (error?.code === 3) {
+            message = 'The browser could not decode the video. Its codec may be unsupported, or the file may be damaged.';
+        }
+    }
+    if (error?.name === 'TimeoutError') {
+        title = 'Media took too long to load';
+        message = error.message;
+        guidance = 'Check your connection and retry. If HEIC processing remains stalled, reload the page. Other supported media can still play.';
+    }
+    $('media-error-title').textContent = title;
+    $('media-error-filename').textContent = decodeURIComponent(filepath.split('/').pop());
+    videoErrorText.textContent = message;
+    videoErrorFfmpeg.textContent = guidance;
+    $('media-error-original').href = filepath;
+    $('btn-next-media-error').disabled = mediaFiles.length < 2;
+    mediaTitle.textContent = decodeURIComponent(filepath.split('/').pop());
+    videoErrorOverlay.style.display = 'flex';
+    scheduleErrorAdvance();
+    if (!slideshowPlaying) showUI();
+}
+
+function scheduleErrorAdvance() {
+    cancelSlideshowTimer();
+    $('media-error-status').textContent = slideshowPlaying
+        ? (mediaFiles.length > 1 ? 'Slideshow continues: skipping this file in 3 seconds.' : 'Slideshow continues: retrying this file in 3 seconds.')
+        : 'Choose Retry or another file. Press Play to continue the slideshow.';
+    if (!slideshowPlaying || !mediaFailed || isGridViewActive) return;
+    const loadId = mediaLoadId;
+    slideshowTimer = setTimeout(() => {
+        slideshowTimer = null;
+        if (slideshowPlaying && mediaFailed && !isGridViewActive && loadId === mediaLoadId) nextSlideshowMedia();
+    }, 3000);
+}
+
+function nextMedia() { showMedia(currentIndex + 1); }
+function prevMedia() { showMedia(currentIndex - 1); }
+function nextSlideshowMedia() {
+    if (!shuffleEnabled || mediaFiles.length <= 1) return nextMedia();
+    let next = currentIndex;
+    while (next === currentIndex) next = Math.floor(Math.random() * mediaFiles.length);
+    showMedia(next);
+}
+
+function applyTransform() {
+    container.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    const changed = zoom !== 1.0 || panX !== 0 || panY !== 0;
+    btnResetZoom.disabled = !changed;
+    container.classList.toggle('grabbing-mode', changed);
+}
+function resetZoomAndPan() { cancelTouchGesture(); zoom = 1.0; panX = 0; panY = 0; applyTransform(); }
+/* The Fit view draws through object-fit:contain inside a box that is always as
+   big as the media pane, so the <img> element (and any border on it) would
+   outline the pane rather than the photo. Size the element to the displayed
+   picture instead — the same math object-fit:contain applies — so the hairline
+   border hugs the media. Zoom, pan and rotation keep transforming the element,
+   so nothing else about the viewer changes. */
+function applyFitSize() {
+    if (!isPhotoActive() || imageMode !== 'fit') return;
+    const pictureWidth = img.naturalWidth, pictureHeight = img.naturalHeight;
+    const paneWidth = viewport.clientWidth, paneHeight = viewport.clientHeight;
+    if (!pictureWidth || !pictureHeight || !paneWidth || !paneHeight) return;
+    // The hairline border sits inside the element box (border-box sizing), so
+    // fit the photo into the pane minus the border: that keeps the border flush
+    // against the picture instead of leaving a sliver of pane showing through.
+    const border = 2;
+    const scale = Math.min((paneWidth - border) / pictureWidth, (paneHeight - border) / pictureHeight);
+    img.style.width = `${Math.max(1, Math.round(pictureWidth * scale)) + border}px`;
+    img.style.height = `${Math.max(1, Math.round(pictureHeight * scale)) + border}px`;
+}
+/* Original-size view (and every non-photo mode) must fall back to the plain
+   auto-sized box the stylesheet defines. */
+function clearFitSize() {
+    img.style.removeProperty('width');
+    img.style.removeProperty('height');
+}
+function applyImageRotation() {
+    let fitScale = 1;
+    if (imageRotation % 180 && imageMode === 'fit' && img.naturalWidth && img.naturalHeight &&
+        viewport.clientWidth && viewport.clientHeight) {
+        // Compute the displayed content size from the image's natural
+        // dimensions and the viewport rather than reading the element box, so
+        // the rotated footprint always fits the pane however the Fit view is
+        // sized (applyFitSize() hugs the photo; Original size can overflow it).
+        // Scale that content — swapped, since a 90°/270° rotation swaps
+        // footprint width and height — to fit the viewport.
+        const contentWidth = Math.min(viewport.clientWidth, viewport.clientHeight * img.naturalWidth / img.naturalHeight);
+        const contentHeight = contentWidth * img.naturalHeight / img.naturalWidth;
+        // Do not cap this at 1: rotating a portrait into landscape leaves room
+        // to enlarge the content while it still fits entirely in the viewport.
+        fitScale = Math.min(viewport.clientWidth / contentHeight, viewport.clientHeight / contentWidth);
+    }
+    img.style.transform = `rotate(${imageRotation}deg) scale(${fitScale})`;
+    img.style.transformOrigin = 'center center';
+    btnRotate.setAttribute('aria-label', `Rotate photo clockwise. Current rotation: ${imageRotation} degrees`);
+    btnRotate.title = `Rotate photo 90° clockwise (currently ${imageRotation}°)`;
+}
+function rotateImage() {
+    if (!isPhotoActive() || mediaFailed) return;
+    imageRotation = (imageRotation + 90) % 360;
+    resetZoomAndPan();
+    applyImageRotation();
+}
+
+function toggleImageMode() {
+    imageMode = imageMode === 'fit' ? 'original' : 'fit';
+    updateControlStates();
+    if (isPhotoActive()) {
+        img.classList.remove('mode-fit', 'mode-original');
+        img.classList.add(imageMode === 'fit' ? 'mode-fit' : 'mode-original');
+        if (imageMode === 'fit') applyFitSize(); else clearFitSize();
+        resetZoomAndPan();
+        applyImageRotation();
+    }
+    savePreferences();
+}
+
+function handleWheel(e) {
+    if (!controlsEnabled) return;
+    if (mediaFailed) return;
+    if (!isPhotoActive()) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const rect = container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left - rect.width / 2;
+    const mouseY = e.clientY - rect.top - rect.height / 2;
+    const prevZoom = zoom;
+    const minZoom = imageMode === 'original' ? 0.1 : 1.0;
+    zoom = Math.max(minZoom, Math.min(10.0, zoom * factor));
+    if (zoom === 1.0 && imageMode !== 'original') { panX = 0; panY = 0; }
+    else {
+        panX = mouseX - (mouseX - panX) * (zoom / prevZoom);
+        panY = mouseY - (mouseY - panY) * (zoom / prevZoom);
+    }
+    applyTransform();
+}
+
+function setupEventListeners() {
+    $('btn-sort').addEventListener('click', cycleSort);
+    $('btn-grid-density')?.addEventListener('click', cycleGridDensity);
+    $('btn-retry-scan').addEventListener('click', () => {
+        if (failedNavigation !== null) { const target = failedNavigation; failedNavigation = null; return navigateToFolder(target); }
+        return loadGallery({ forceCacheClear: true });
+    });
+    $('btn-gallery-home').addEventListener('click', async () => {
+        galleryViewMode = 'folders';
+        updateControlStates();
+        await navigateToFolder('');
+        savePreferences();
+    });
+    btnShowGrid.addEventListener('click', renderGridView);
+    btnRefreshGrid.addEventListener('click', () => loadGallery({ preserveView: true, forceCacheClear: true }));
+    btnShuffle.addEventListener('click', () => { shuffleEnabled = !shuffleEnabled; updateControlStates(); savePreferences(); });
+    btnAutoRefresh.addEventListener('click', () => { autoRefreshEnabled = !autoRefreshEnabled; updateControlStates(); startAutoRefreshTimer(); savePreferences(); });
+    btnViewMode.addEventListener('click', async () => {
+        scanSession?.abort();
+        galleryViewMode = galleryViewMode === 'all' ? 'folders' : 'all';
+        currentIndex = 0;
+        stopSlideshow();
+        updateControlStates();
+        await loadGallery({ preserveView: false });
+        savePreferences();
+    });
+    btnStars.addEventListener('click', async () => {
+        scanSession?.abort();
+        starFilterMode = !starFilterMode;
+        currentIndex = 0;
+        stopSlideshow();
+        updateControlStates();
+        await loadGallery({ preserveView: false });
+    });
+    btnViewerStar.addEventListener('click', async () => {
+        const file = mediaFiles[currentIndex];
+        if (!file) return;
+        toggleStarred(file);
+        const stillStarred = isStarred(file);
+        if (starFilterMode && !stillStarred) {
+            // Unstarred while viewing the starred list: pull it out of the
+            // filtered playlist and continue with the next starred media,
+            // or return to the (now empty) starred grid when it was last.
+            const removedIndex = currentIndex;
+            mediaFiles = mediaFiles.filter(candidate => candidate !== file);
+            if (mediaFiles.length) showMedia(Math.min(removedIndex, mediaFiles.length - 1));
+            else await loadGallery({ preserveView: false });
+            return;
+        }
+        updateViewerStarState();
+        updateControlStates();
+    });
+    btnOptimize.addEventListener('click', async () => {
+        const file = mediaFiles[currentIndex];
+        if (!file || !isOptimizableImage(file) || btnOptimize.disabled || !optimizeCapable) return;
+        btnOptimize.disabled = true;
+        operationInFlight = true;
+        setMediaLoading(`Optimizing ${decodeURIComponent(file.split('/').pop())}…`);
+        $('scan-loading').hidden = false;
+        setScanProgressBar('busy');
+        try {
+            const data = await requestOptimization({ path: optimizeRelativePath(file) });
+            removeCacheEntry(file);
+            showMedia(currentIndex); // reload the freshly optimized original
+            setMediaLoading(optimizeResultText(data));
+            setTimeout(() => { if (!isGridViewActive) setMediaLoading(); }, 1600);
+        } catch (error) {
+            console.warn('FolderFrame optimize failed:', error);
+            setMediaLoading();
+            setScanStatus(`Optimize failed: ${error.message}`, true);
+        } finally {
+            operationInFlight = false;
+            setScanProgressBar(null);
+            $('scan-loading').hidden = true;
+            btnOptimize.disabled = !isOptimizableImage(file);
+            updateViewerStarState();
+            updateControlStates();
+        }
+    });
+    btnOptimizeFolder.addEventListener('click', async () => {
+        if (starFilterMode || galleryViewMode !== 'folders' || isScanning || btnOptimizeFolder.disabled || !optimizeCapable) return;
+        btnOptimizeFolder.disabled = true;
+        operationInFlight = true;
+        setScanStatus(`Optimizing images in ${currentFolder || activeSource.label}…`);
+        $('scan-loading').hidden = false;
+        setScanProgressBar('busy');
+        try {
+            const data = await requestOptimization({ folder: currentFolder || '' });
+            if (data?.errors?.length) console.warn('FolderFrame folder optimize reported errors:', data.errors);
+            await loadGallery({ preserveView: true, forceCacheClear: true });
+            setScanStatus(optimizeResultText(data), Boolean(data?.errors?.length));
+        } catch (error) {
+            console.warn('FolderFrame folder optimize failed:', error);
+            setScanStatus(`Optimize failed: ${error.message}`, true);
+        } finally {
+            operationInFlight = false;
+            setScanProgressBar(null);
+            $('scan-loading').hidden = true;
+            updateControlStates();
+        }
+    });
+    btnConvert.addEventListener('click', () => {
+        const file = mediaFiles[currentIndex];
+        if (!file || !isImageFile(file) || btnConvert.disabled || !convertCapable || operationInFlight) return;
+        openConvertPrompt('file', optimizeRelativePath(file));
+    });
+    btnConvertFolder.addEventListener('click', () => {
+        if (starFilterMode || galleryViewMode !== 'folders' || isScanning || btnConvertFolder.disabled || !convertCapable || operationInFlight) return;
+        openConvertPrompt('folder', currentFolder || '');
+    });
+    $('btn-convert-cancel').addEventListener('click', closeConvertPrompt);
+    $('btn-convert-confirm').addEventListener('click', () => {
+        const request = convertRequest;
+        const format = $('convert-format').value;
+        if (!request || !Object.prototype.hasOwnProperty.call(CONVERT_FORMAT_LABELS, format)) return;
+        const deleteOriginal = $('convert-delete-original').checked;
+        closeConvertPrompt();
+        return runConvert(request.kind, request.relative, format, deleteOriginal);
+    });
+    btnTvMode.addEventListener('click', toggleTvMode);
+    navLeft.addEventListener('click', prevMedia);
+    navRight.addEventListener('click', nextMedia);
+    btnRotate.addEventListener('click', rotateImage);
+    btnResetZoom.addEventListener('click', resetZoomAndPan);
+    btnImageMode.addEventListener('click', toggleImageMode);
+    btnCopyLink.addEventListener('click', copyCurrentImage);
+    btnCopyFilename?.addEventListener('click', copyCurrentFilename);
+    btnViewerOptions.addEventListener('click', () => setViewerOptionsOpen(viewerOptionsMenu.hidden));
+    btnGridOptions.addEventListener('click', () => setGridOptionsOpen(gridOptionsMenu.hidden));
+    if (btnInfo) {
+        btnInfo.addEventListener('click', () => toggleInfoPanel());
+    }
+    if (btnInfoClose) {
+        btnInfoClose.addEventListener('click', () => setInfoPanel(false));
+    }
+    // Workflow download buttons must be wired regardless of whether the old
+    // btn-info / btn-info-close buttons exist (they were removed when the
+    // details panel became permanent) — otherwise download does nothing.
+    btnDownloadWorkflow?.addEventListener('click', () => downloadCurrentWorkflow());
+    btnInfoDownloadWorkflow?.addEventListener('click', () => downloadCurrentWorkflow());
+    if (btnCaptionThis) {
+        btnCaptionThis.addEventListener('click', captionCurrentImage);
+    }
+    if (btnInfoConvert) {
+        btnInfoConvert.addEventListener('click', () => {
+            const file = mediaFiles[currentIndex];
+            if (!file || !isImageFile(file) || btnInfoConvert.disabled || !convertCapable || operationInFlight) return;
+            openConvertPrompt('file', optimizeRelativePath(file));
+        });
+    }
+    viewport.addEventListener('wheel', handleWheel, { passive: false });
+    viewport.addEventListener('mousedown', handleViewerPointerDown);
+    viewport.addEventListener('click', handleViewerDismissClick);
+    viewerBackdrop.addEventListener('click', handleViewerDismissClick);
+    viewport.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: false });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewport.addEventListener('touchend', handleTouchEnd);
+    viewport.addEventListener('touchcancel', cancelTouchGesture);
+    $('overlay-header').addEventListener('focusin', showUI);
+    $('overlay-header').addEventListener('focusout', resetIdleTimer);
+    btnPlayPause.addEventListener('click', toggleSlideshow);
+    selectInterval.addEventListener('change', e => {
+        slideshowInterval = Number(e.target.value);
+        if (slideshowPlaying && isPhotoActive()) startSlideshowTimer();
+        savePreferences();
+    });
+    btnFullscreen.addEventListener('click', toggleFullscreen);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    btnRetryWarning.addEventListener('click', () => loadGallery({ preserveView: false, forceCacheClear: true }));
+    $('btn-warning-previous').addEventListener('click', () => {
+        const target = missingFolderRecovery ? missingFolderRecovery.parent : warningReturnFolder;
+        if (target !== null) return navigateToFolder(target);
+    });
+    $('btn-warning-root').addEventListener('click', () => navigateToFolder(''));
+    btnCloseVideoError.addEventListener('click', renderGridView);
+    $('btn-retry-media-error').addEventListener('click', () => {
+        removeCacheEntry(mediaFiles[currentIndex]);
+        showMedia(currentIndex);
+    });
+    $('btn-next-media-error').addEventListener('click', nextMedia);
+
+    window.addEventListener('keydown', e => {
+        if (!controlsEnabled) return;
+        if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (e.target?.isContentEditable || e.target?.closest?.('a, select, input, textarea, video, [contenteditable]:not([contenteditable="false"])')) return;
+        if (isGridViewActive) {
+            if (e.key === 'Escape') {
+                if (!gridOptionsMenu.hidden) {
+                    e.preventDefault();
+                    setGridOptionsOpen(false);
+                } else if (currentFolder) {
+                    e.preventDefault();
+                    navigateToFolder(parentFolder(currentFolder));
+                }
+                return;
+            }
+            const direction = { ArrowUp: -48, ArrowDown: 48, PageUp: -0.85, PageDown: 0.85 };
+            if (!['Home', 'End', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) return;
+            e.preventDefault();
+            if (e.key === 'Home') gridVirtualizer?.jumpToStart?.() ?? (gridViewContainer.scrollTop = 0);
+            else if (e.key === 'End') gridVirtualizer?.jumpToEnd?.() ?? (gridViewContainer.scrollTop = gridViewContainer.scrollHeight);
+            else {
+                const value = direction[e.key];
+                gridViewContainer.scrollTop = Math.max(0, Math.min(gridViewContainer.scrollHeight,
+                    gridViewContainer.scrollTop + (Math.abs(value) < 1 ? value * gridViewContainer.clientHeight : value)));
+            }
+            $('btn-back-to-top').hidden = gridViewContainer.scrollTop < 320;
+            gridVirtualizer?.update();
+            return;
+        }
+        const key = e.key.toLowerCase();
+        if (!['arrowleft', 'arrowright', ' ', 'enter', 's', 'f', 't', 'r', 'g', 'escape'].includes(key)) return;
+        // Viewer shortcuts own these keys even after a toolbar/arrow button is
+        // clicked. Prevent native Space/Enter activation of the focused button.
+        e.preventDefault();
+        if (e.repeat && key !== 'arrowleft' && key !== 'arrowright') return;
+        const browsingWithArrows = e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+        if (e.key === 'ArrowLeft') prevMedia();
+        if (e.key === 'ArrowRight') nextMedia();
+        if (e.key === ' ') { e.preventDefault(); toggleSlideshow(); }
+        if (e.key === 'Enter') { e.preventDefault(); toggleImageMode(); }
+        if (e.key.toLowerCase() === 's') { shuffleEnabled = !shuffleEnabled; updateControlStates(); savePreferences(); }
+        if (e.key.toLowerCase() === 'f') toggleFullscreen();
+        if (e.key.toLowerCase() === 't') toggleTvMode();
+        if (e.key.toLowerCase() === 'r') rotateImage();
+        if (e.key === 'Escape' && !viewerOptionsMenu.hidden) setViewerOptionsOpen(false);
+        else if (e.key.toLowerCase() === 'g' || e.key === 'Escape') renderGridView();
+        // Arrow browsing must not keep waking or extending the viewer chrome.
+        // Pointer movement remains the normal way to reveal hidden controls.
+        if (!browsingWithArrows) resetIdleTimer();
+    });
+
+    window.addEventListener('mousemove', () => { if (!isGridViewActive) resetIdleTimer(); });
+    let resizeFrame = null;
+    window.addEventListener('resize', () => {
+        if (resizeFrame) return;
+        resizeFrame = requestAnimationFrame(() => {
+            resizeFrame = null;
+            updateGalleryHeaderLayout();
+            if (!isGridViewActive && isPhotoActive()) { applyFitSize(); applyImageRotation(); }
+        });
+    });
+    window.addEventListener('click', event => {
+        if (!event.target?.closest?.('#viewer-options')) setViewerOptionsOpen(false);
+        if (!event.target?.closest?.('#grid-options')) setGridOptionsOpen(false);
+        if (!isGridViewActive) resetIdleTimer();
+    });
+    window.addEventListener('touchstart', () => { if (!isGridViewActive) resetIdleTimer(); });
+    gridViewContainer.addEventListener('scroll', () => {
+        $('btn-back-to-top').hidden = gridViewContainer.scrollTop < 320;
+        gridVirtualizer?.update();
+    }, { passive: true });
+    $('btn-back-to-top').addEventListener('click', () => {
+        if (gridViewContainer.scrollTo) gridViewContainer.scrollTo({ top: 0, behavior: 'smooth' });
+        else gridViewContainer.scrollTop = 0;
+    });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && autoRefreshEnabled && !operationInFlight) loadGallery({ preserveView: true, silent: true }); });
+}
+
+function startAutoRefreshTimer() {
+    if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+    if (!autoRefreshEnabled) return;
+    autoRefreshTimer = setInterval(() => {
+        if (!document.hidden && !operationInFlight) loadGallery({ preserveView: true, silent: true });
+    }, refreshInterval * 1000);
+}
+
+async function toggleTvMode() {
+    tvModeEnabled = !tvModeEnabled;
+    video.controls = controlsEnabled && !tvModeEnabled;
+    if (tvModeEnabled) {
+        imageMode = 'fit';
+        shuffleEnabled = true;
+        autoRefreshEnabled = true;
+        updateControlStates();
+        startAutoRefreshTimer();
+        if (mediaFiles.length && isGridViewActive) enterFullScreenViewer(currentIndex);
+        if (!slideshowPlaying) setSlideshowPlaying(true);
+        try {
+            if (!document.fullscreenElement) await wrapper.requestFullscreen();
+        } catch (err) {
+            console.info('Fullscreen was not allowed by the browser:', err);
+        }
+    } else {
+        // Leaving TV mode should return the browser to a normal windowed,
+        // paused viewer state.
+        setSlideshowPlaying(false);
+        video.pause();
+        progressBar.style.width = '0%';
+
+        try {
+            if (document.fullscreenElement) await document.exitFullscreen();
+        } catch (err) {
+            console.info('Could not exit fullscreen:', err);
+        }
+
+        updateControlStates();
+        showUI();
+    }
+    savePreferences();
+}
+
+/* Clicking outside the media — the dimmed margins around the floating panel, or
+   the empty pane around the photo — dismisses the viewer and returns to the
+   grid, mirroring the Escape / G shortcut. Panning, zooming and the mobile
+   swipe-to-dismiss all end with a click too, so remember where the pointer went
+   down and ignore anything that travelled across the pane. */
+let viewerPointerDownAt = null;
+function handleViewerPointerDown(event) {
+    viewerPointerDownAt = { x: event.clientX, y: event.clientY };
+}
+function handleViewerDismissClick(event) {
+    const start = viewerPointerDownAt;
+    viewerPointerDownAt = null;
+    if (isGridViewActive || !controlsEnabled || tvModeEnabled) return;
+    const target = event.target;
+    if (target !== viewport && target !== container && target !== viewerBackdrop) return;
+    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6) return;
+    renderGridView();
+}
+
+function handleMouseDown(e) {
+    if (!controlsEnabled) return;
+    if (mediaFailed) return;
+    if (!isPhotoActive()) return;
+    if (e.button !== 0) return;
+    if (zoom !== 1.0 || imageMode === 'original' || panX !== 0 || panY !== 0) {
+        isDragging = true; startX = e.clientX; startY = e.clientY; startPanX = panX; startPanY = panY;
+    }
+}
+function handleMouseMove(e) { if (isDragging) { panX = startPanX + e.clientX - startX; panY = startPanY + e.clientY - startY; applyTransform(); } }
+function handleMouseUp() { isDragging = false; }
+
+function handleTouchStart(e) {
+    swipeStart = null;
+    if (!controlsEnabled) return;
+    if (mediaFailed) return;
+    if (!isPhotoActive()) return;
+    if (e.target?.closest?.('button, a, select, input, video')) return;
+    resetIdleTimer();
+    if (e.touches.length === 2) {
+        isPinching = true; isDragging = false;
+        const [t1, t2] = e.touches;
+        initialDist = Math.max(1, Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY));
+        const midX = (t1.clientX + t2.clientX) / 2, midY = (t1.clientY + t2.clientY) / 2;
+        // Measure in the stationary viewport, never the already-transformed image.
+        const rect = viewport.getBoundingClientRect();
+        initialMidX = midX - rect.left - rect.width / 2;
+        initialMidY = midY - rect.top - rect.height / 2;
+        initialZoom = zoom; initialPanX = panX; initialPanY = panY;
+    } else if (e.touches.length === 1 && (zoom !== 1.0 || imageMode === 'original' || panX !== 0 || panY !== 0)) {
+        isDragging = true; isPinching = false;
+        startX = e.touches[0].clientX; startY = e.touches[0].clientY; startPanX = panX; startPanY = panY;
+    } else if (e.touches.length === 1 && imageMode === 'fit' && zoom === 1 && !panX && !panY) {
+        swipeStart = {
+            x: e.touches[0].clientX, y: e.touches[0].clientY,
+            id: e.touches[0].identifier, time: performance.now(), axis: null
+        };
+    }
+}
+
+function handleTouchMove(e) {
+    if (!controlsEnabled) return;
+    if (mediaFailed) return;
+    if (!isPhotoActive()) return;
+    if (isPinching && e.touches.length === 2) {
+        e.preventDefault();
+        const [t1, t2] = e.touches;
+        const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        const factor = dist / initialDist;
+        const minZoom = imageMode === 'original' ? 0.1 : 1.0;
+        zoom = Math.max(minZoom, Math.min(10.0, initialZoom * factor));
+        if (zoom === 1.0 && imageMode !== 'original') { panX = 0; panY = 0; }
+        else {
+            panX = initialMidX - (initialMidX - initialPanX) * (zoom / initialZoom);
+            panY = initialMidY - (initialMidY - initialPanY) * (zoom / initialZoom);
+            const midX = (t1.clientX + t2.clientX) / 2, midY = (t1.clientY + t2.clientY) / 2;
+            const rect = viewport.getBoundingClientRect();
+            panX += (midX - rect.left - rect.width / 2) - initialMidX;
+            panY += (midY - rect.top - rect.height / 2) - initialMidY;
+        }
+        applyTransform();
+    } else if (isDragging && e.touches.length === 1) {
+        e.preventDefault();
+        panX = startPanX + e.touches[0].clientX - startX;
+        panY = startPanY + e.touches[0].clientY - startY;
+        applyTransform();
+    } else if (swipeStart && e.touches.length === 1) {
+        const touch = Array.from(e.touches).find(candidate => candidate.identifier === swipeStart.id);
+        if (!touch) return;
+        const dx = touch.clientX - swipeStart.x, dy = touch.clientY - swipeStart.y;
+        if (!swipeStart.axis && Math.max(Math.abs(dx), Math.abs(dy)) >= 10) {
+            if (dy > 0 && Math.abs(dy) > Math.abs(dx) * 1.15) swipeStart.axis = 'vertical';
+            else if (Math.abs(dx) > Math.abs(dy) * 1.15) swipeStart.axis = 'horizontal';
+            else swipeStart.axis = 'undecided';
+        } else if (swipeStart.axis === 'undecided') {
+            if (dy > 0 && Math.abs(dy) > Math.abs(dx) * 1.15) swipeStart.axis = 'vertical';
+            else if (Math.abs(dx) > Math.abs(dy) * 1.15) swipeStart.axis = 'horizontal';
+        }
+        if (swipeStart.axis === 'vertical') {
+            e.preventDefault();
+            const offset = Math.max(0, dy);
+            const visualOffset = offset * 0.86;
+            container.classList.add('dismiss-drag');
+            container.style.transform = `translateY(${visualOffset}px) scale(${1 - Math.min(0.04, offset / 5000)})`;
+            container.style.opacity = String(Math.max(0.45, 1 - offset / 500));
+        }
+    }
+}
+function clearDismissVisual(snapBack = false) {
+    container.classList.remove('dismiss-drag');
+    container.classList.toggle('dismiss-snapback', snapBack);
+    container.style.opacity = '';
+    applyTransform();
+    if (snapBack) setTimeout(() => container.classList.remove('dismiss-snapback'), 180);
+}
+function cancelTouchGesture(snapBack = false) {
+    const hadDismissDrag = swipeStart?.axis === 'vertical';
+    isDragging = false; isPinching = false; swipeStart = null;
+    if (hadDismissDrag) clearDismissVisual(snapBack);
+}
+function handleTouchEnd(e) {
+    if (e.touches.length === 0) {
+        const start = swipeStart;
+        const end = Array.from(e.changedTouches || []).find(touch => touch.identifier === start?.id);
+        const eligible = controlsEnabled && !mediaFailed && !isGridViewActive && isPhotoActive() &&
+            imageMode === 'fit' && zoom === 1 && !panX && !panY && !isPinching && !isDragging;
+        if (start && end && eligible) {
+            const dx = end.clientX - start.x, dy = end.clientY - start.y;
+            const elapsed = Math.max(16, performance.now() - start.time);
+            const viewportHeight = viewport.clientHeight || 600;
+            const dismissDistance = Math.min(180, Math.max(100, viewportHeight * 0.22));
+            const quickDismiss = elapsed >= 40 && dy >= 60 && dy / elapsed >= 0.75;
+            if (start.axis === 'vertical' && dy > 0 && (dy >= dismissDistance || quickDismiss)) {
+                cancelTouchGesture();
+                renderGridView();
+                return;
+            }
+            if (Math.abs(dx) >= 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+                if (dx < 0) nextMedia(); else prevMedia();
+                resetIdleTimer();
+            }
+        }
+        cancelTouchGesture(start?.axis === 'vertical');
+        return;
+    }
+    if (e.touches.length === 1 && isPinching) {
+        isPinching = false;
+        isDragging = true;
+        startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+        startPanX = panX; startPanY = panY;
+    }
+}
+
+function toggleSlideshow() { setSlideshowPlaying(!slideshowPlaying); }
+function setSlideshowPlaying(value) {
+    slideshowPlaying = Boolean(value);
+    syncPlayButton();
+    if (mediaFailed) {
+        scheduleErrorAdvance();
+        return;
+    }
+    if (slideshowPlaying) {
+        if (!isPhotoActive()) video.play().catch(() => {});
+        else startSlideshowTimer();
+    } else stopSlideshow(false);
+}
+function stopSlideshow(updateButton = true) {
+    slideshowPlaying = false;
+    cancelSlideshowTimer();
+    if (!isPhotoActive()) video.pause();
+    progressBar.style.width = '0%';
+    if (updateButton) syncPlayButton();
+}
+
+function cancelSlideshowTimer() {
+    if (slideshowTimer) {
+        clearTimeout(slideshowTimer);
+        slideshowTimer = null;
+    }
+    if (slideshowAnimationFrame) {
+        cancelAnimationFrame(slideshowAnimationFrame);
+        slideshowAnimationFrame = null;
+    }
+}
+
+function startSlideshowTimer() {
+    if (mediaFailed) { scheduleErrorAdvance(); return; }
+    cancelSlideshowTimer();
+    if (!imageReady || mediaFailed || isGridViewActive) return;
+    slideProgress = 0;
+    progressBar.style.width = '0%';
+
+    const duration = slideshowInterval * 1000;
+    slideshowStartedAt = performance.now();
+
+    const tick = (now) => {
+        if (!slideshowPlaying || !isPhotoActive()) {
+            slideshowAnimationFrame = null;
+            return;
+        }
+
+        const elapsed = now - slideshowStartedAt;
+        const percent = Math.min(100, (elapsed / duration) * 100);
+        slideProgress = percent;
+        progressBar.style.width = `${percent}%`;
+
+        if (elapsed >= duration) {
+            slideshowAnimationFrame = null;
+            nextSlideshowMedia();
+        } else {
+            slideshowAnimationFrame = requestAnimationFrame(tick);
+        }
+    };
+
+    slideshowAnimationFrame = requestAnimationFrame(tick);
+}
+
+function handleFullscreenChange() {
+    updateFullscreenButton();
+    if (!document.fullscreenElement && tvModeEnabled) {
+        tvModeEnabled = false;
+        stopSlideshow();
+        video.pause();
+        video.controls = controlsEnabled;
+        updateControlStates();
+        showUI();
+        savePreferences();
+    }
+}
+
+function updateFullscreenButton() {
+    const label = btnFullscreen.querySelector('.button-label');
+    const isFullscreen = Boolean(document.fullscreenElement);
+    if (label) label.textContent = isFullscreen ? 'Exit Full' : 'Full';
+    btnFullscreen.setAttribute('aria-pressed', String(isFullscreen));
+    btnFullscreen.title = isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
+}
+
+async function toggleFullscreen() {
+    try {
+        if (!document.fullscreenElement) await wrapper.requestFullscreen();
+        else await document.exitFullscreen();
+    } catch (err) {
+        console.log('Fullscreen blocked:', err);
+    }
+}
+
+function showUI() {
+    if (!controlsEnabled) return;
+    if (isGridViewActive) return;
+    uiVisible = true;
+    $('overlay-header').classList.remove('ui-hidden');
+    progressContainer.classList.remove('ui-hidden');
+    navLeft.classList.remove('ui-hidden'); navRight.classList.remove('ui-hidden');
+    helpHint.classList.remove('ui-hidden');
+    if (infoPanel && !infoPanel.hidden) infoPanel.classList.remove('ui-hidden');
+    document.body.classList.remove('cursor-hidden');
+    resetIdleTimer();
+}
+function hideUI() {
+    if (isGridViewActive || isDragging || isPinching || mediaFailed) return;
+    if (document.activeElement?.matches?.(':focus-visible') &&
+        document.activeElement?.closest?.('#overlay-header, .nav-arrow, #info-panel')) return;
+    uiVisible = false;
+    $('overlay-header').classList.add('ui-hidden');
+    progressContainer.classList.add('ui-hidden');
+    navLeft.classList.add('ui-hidden'); navRight.classList.add('ui-hidden');
+    helpHint.classList.add('ui-hidden');
+    if (infoPanel && !infoPanel.hidden) infoPanel.classList.add('ui-hidden');
+    document.body.classList.add('cursor-hidden');
+}
+function resetIdleTimer() {
+    if (!controlsEnabled) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    if (isGridViewActive) return;
+    if (!uiVisible) {
+        uiVisible = true;
+        $('overlay-header').classList.remove('ui-hidden');
+        progressContainer.classList.remove('ui-hidden');
+        navLeft.classList.remove('ui-hidden'); navRight.classList.remove('ui-hidden');
+        helpHint.classList.remove('ui-hidden');
+        if (infoPanel && !infoPanel.hidden) infoPanel.classList.remove('ui-hidden');
+        document.body.classList.remove('cursor-hidden');
+    }
+    idleTimer = setTimeout(hideUI, tvModeEnabled ? 1800 : 3000);
+}
+
+function escapeHtml(value) {
+    return value.replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[char]);
+}

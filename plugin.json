@@ -1,0 +1,63 @@
+{
+  "id": "betacaption",
+  "name": "Beta Caption",
+  "version": "0.1.3",
+  "description": "Beta ComfyCaption with the Gallery browser built in (grid, folders and viewer). Uses the same media root as Gallery.",
+  "author": "DeeplabSystems",
+  "repository": "https://github.com/LainStable/SDCodex-beta",
+  "entrypoint": "plugin:init_plugin",
+  "entry_page": "captioning",
+  "nav_items": [
+    {
+      "label": "Captioning",
+      "page": "captioning"
+    },
+    {
+      "label": "Gallery",
+      "page": "browser"
+    }
+  ],
+  "settings": [
+    {
+      "label": "Caption Models",
+      "page": "settings",
+      "icon": "settings"
+    }
+  ],
+  "task_status": {
+    "label": "ComfyCaption",
+    "path": "/betacaption/api/task",
+    "page": "captioning"
+  },
+  "volumes": [
+    {
+      "env_var": "COMFYUI_INSTALL_DIR",
+      "host_path": "./comfyui",
+      "container_path": "/data/comfyui",
+      "description": "ComfyUI installation folder. In Docker mode this folder must contain main.py so the Caption Models page can install nodes into custom_nodes."
+    },
+    {
+      "env_var": "CAPTION_MODELS",
+      "host_path": "./caption_models",
+      "container_path": "/data/caption_models",
+      "description": "Directory for captioning models (GGUF + mmproj). Point this at your LM Studio models folder to reuse existing GGUFs \u2014 files downloaded from the Caption Models page land here too"
+    }
+  ],
+  "icon": "subtitles",
+  "assistant_actions": [
+    {
+      "name": "batch_status",
+      "description": "Caption batch state, progress and recent events.",
+      "method": "GET",
+      "path": "/betacaption/api/batch/status"
+    },
+    {
+      "name": "stop_batch",
+      "description": "Stop the running caption batch.",
+      "method": "POST",
+      "path": "/betacaption/api/batch/stop",
+      "confirm": true
+    }
+  ],
+  "branch": "caption"
+}

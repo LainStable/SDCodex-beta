@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SDCodex – Beta Caption</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "background": "#0f131c",
+        "surface": "#0f131c",
+        "surface-dim": "#0f131c",
+        "surface-container-lowest": "#0a0e17",
+        "surface-container-low": "#181b25",
+        "surface-container": "#1c1f29",
+        "surface-container-high": "#262a34",
+        "surface-container-highest": "#31353f",
+        "surface-bright": "#353943",
+        "surface-variant": "#31353f",
+        "on-surface": "#dfe2ef",
+        "on-surface-variant": "#c7c4d7",
+        "primary": "#c0c1ff",
+        "primary-container": "#8083ff",
+        "on-primary": "#1000a9",
+        "secondary": "#4cd7f6",
+        "secondary-container": "#03b5d3",
+        "tertiary": "#d0bcff",
+        "outline": "#908fa0",
+        "outline-variant": "#464554",
+        "inverse-surface": "#dfe2ef",
+        "slate-bg": "#0F172A",
+        "slate-surface": "#1E293B",
+        "slate-border": "#334155",
+        "badge-checkpoint": "#6366F1",
+        "badge-flux": "#EC4899",
+        "badge-lora": "#8B5CF6",
+        "badge-sdxl": "#06B6D4",
+        "status-active": "#10B981",
+        "status-warning": "#F59E0B",
+        "status-alert": "#EF4444",
+        "error": "#ffb4ab",
+        "error-container": "#93000a",
+      },
+      borderRadius: { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" },
+      fontFamily: {
+        "label-md": ["JetBrains Mono"],
+        "label-sm": ["JetBrains Mono"],
+        "code-sm": ["JetBrains Mono"],
+        "code-md": ["JetBrains Mono"],
+        "body-sm": ["Inter"],
+        "body-md": ["Inter"],
+        "body-lg": ["Inter"],
+        "headline-sm": ["Geist"],
+        "headline-md": ["Geist"],
+        "headline-lg": ["Geist"],
+        "display-lg": ["Geist"],
+      },
+      fontSize: {
+        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.04em", "fontWeight": "600" }],
+        "label-sm": ["10px", { "lineHeight": "14px", "letterSpacing": "0.06em", "fontWeight": "600" }],
+        "code-sm":  ["11px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+        "code-md":  ["13px", { "lineHeight": "18px", "fontWeight": "500" }],
+        "body-sm":  ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+        "body-md":  ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+        "headline-sm": ["16px", { "lineHeight": "24px", "fontWeight": "600" }],
+        "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+      }
+    }
+  }
+}
+</script>
+<style>
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+    line-height: 1; display: inline-block; vertical-align: middle;
+  }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: rgba(10,14,23,0.6); }
+  ::-webkit-scrollbar-thumb { background: rgba(51,65,85,0.6); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.6); }
+  .tag-pill { cursor: pointer; user-select: none; transition: all 0.15s; }
+  .tag-pill:hover { opacity: 0.8; }
+  #caption-editor { resize: none; }
+  .progress-fill { transition: width 0.3s ease; }
+  .asset-card.active { border-color: #6366F1; box-shadow: 0 0 12px rgba(99,102,241,0.3); }
+  #image-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); align-content: start; }
+  .asset-thumbnail { aspect-ratio: 4 / 3; background: #080b12; }
+  .asset-thumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+  /* Live on-disk explorer rail (Gallery-style folder chips + counts). */
+  .explorer-rail { display: flex; align-items: center; gap: 4px; overflow-x: auto; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); scrollbar-width: thin; }
+  .explorer-rail:empty { display: none; }
+  .explorer-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid #354054; border-radius: 3px; background: rgba(255,255,255,0.04); color: #aab4c6; font: 600 10px/1.5 "JetBrains Mono", ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; cursor: pointer; }
+  .explorer-chip:hover { border-color: rgba(99,102,241,0.55); background: rgba(99,102,241,0.18); color: #fff; }
+  .explorer-chip.current { border-color: rgba(99,102,241,0.55); background: rgba(99,102,241,0.2); color: #fff; }
+  .explorer-chip .n { color: #8a94a6; font-weight: 500; }
+  .explorer-sep { flex: 0 0 auto; color: #64748b; font-size: 11px; }
+
+  /* Folder browser — gallery-style: quick-root chips, a clickable breadcrumb
+     path bar, a filter box and keyboard-navigable folder rows. */
+  .folder-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(5,8,13,0.73); }
+  .folder-modal.open { display: flex; }
+  .folder-modal-box { display: flex; flex-direction: column; width: min(1400px, 96vw); height: min(900px, 92vh); max-height: 92vh; overflow: hidden; background: #171e2a; border: 1px solid #354054; border-radius: 8px; }
+  .folder-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid #2b3444; }
+  .folder-modal-head strong { font-family: Geist, Inter, sans-serif; font-size: 15px; font-weight: 700; color: #dfe2ef; }
+  .gallery-picker { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #121821; display: block; }
+  .folder-modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; border-top: 1px solid #2b3444; background: rgba(9, 13, 22, 0.55); }
+  .folder-modal-foot[hidden] { display: none; }
+  .folder-modal-foot .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8a94a6; font: 500 11px/1.5 "JetBrains Mono", ui-monospace, monospace; }
+  .folder-modal-foot button.use { border-color: rgba(99, 102, 241, 0.55); background: rgba(99, 102, 241, 0.25); color: #fff; }
+  .folder-modal-head button { padding: 6px 10px; border: 1px solid #354054; border-radius: 5px; background: #202838; color: #dfe2ef; font-size: 12px; cursor: pointer; }
+  .folder-modal-head button:hover { border-color: #6672ee; background: #29334a; }
+</style>
+</head>
+<body class="bg-surface-container-lowest text-on-surface font-body-md antialiased flex min-h-screen flex-col overflow-y-auto">
+
+<!-- ===== TOP TOOLBAR ===== -->
+<header class="shrink-0 flex flex-wrap items-center justify-between gap-2 px-4 py-2 min-h-11 border-b border-outline-variant/30 bg-surface-container-lowest/80 backdrop-blur z-30">
+  <div class="flex items-center gap-3">
+    <span class="material-symbols-outlined text-badge-lora text-[20px]">subtitles</span>
+    <span class="font-headline-sm text-headline-sm font-bold tracking-tight">Beta Caption</span><span style="margin-left:8px;border:1px solid rgba(99,102,241,.5);border-radius:3px;background:rgba(99,102,241,.18);padding:2px 6px;color:#b9baff;font:600 9px/1.4 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.06em">BETA · GALLERY BUILT IN</span>
+    <span class="rounded border border-white/15 bg-white/5 px-2 py-0.5 font-mono text-[10px] uppercase text-ink-muted">v2.8.2</span>
+    <div id="conn-badge" class="hidden items-center gap-1.5 px-2 py-0.5 rounded border border-status-active/30 bg-status-active/10 text-status-active font-code-sm text-[10px] leading-[1.5]">
+      <span class="w-1.5 h-1.5 rounded-full bg-status-active animate-ping"></span>
+      <span id="conn-text">Connected</span>
+    </div>
+    <div id="conn-badge-err" class="hidden items-center gap-1.5 px-2 py-0.5 rounded border border-status-alert/30 bg-status-alert/10 text-status-alert font-code-sm text-[10px] leading-[1.5]">
+      <span class="w-1.5 h-1.5 rounded-full bg-status-alert"></span>
+      <span>LM Studio offline</span>
+    </div>
+  </div>
+  <div class="flex items-center gap-2">
+    <!-- Batch mode selector -->
+    <select id="mode-select" class="bg-surface-container border border-outline-variant/40 rounded px-2 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint">
+      <option value="">Caption All</option>
+      <option value="missing">Skip Already Tagged</option>
+    </select>
+    <button id="btn-batch" class="sd-btn sd-btn-primary" disabled>
+      <span class="material-symbols-outlined text-[15px]">bolt</span>
+      <span>Batch Caption</span>
+    </button>
+    <button id="btn-stop" class="sd-btn sd-btn-danger hidden">
+      <span class="material-symbols-outlined text-[15px]">stop</span>
+      <span>Stop</span>
+    </button>
+  </div>
+</header>
+
+<!-- ===== FOLDER / MODEL BAR ===== -->
+<div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2 border-b border-outline-variant/20 bg-surface-container/50 text-body-sm">
+  <!-- Folder picker -->
+  <span class="material-symbols-outlined text-outline text-[16px]">folder_open</span>
+  <div class="flex-1 relative">
+    <input id="folder-input" type="text" placeholder="/data/downloads  (type a path or browse →)"
+           class="w-full bg-surface-container-lowest border border-outline-variant/40 rounded px-2.5 py-1 text-body-sm text-on-surface placeholder:text-outline/60 focus:outline-none focus:border-badge-checkpoint"/>
+  </div>
+  <button id="btn-browse" title="Browse folders & images" class="sd-btn sd-btn-icon">
+    <span class="material-symbols-outlined text-[16px]">manage_search</span>
+  </button>
+  <button id="btn-load" class="sd-btn">
+    Load Folder
+  </button>
+
+  <div class="h-4 w-px bg-outline-variant/30 mx-1"></div>
+
+  <!-- LM Studio URL -->
+  <span class="material-symbols-outlined text-outline text-[16px]">hub</span>
+  <input id="lm-url" type="text" value="http://localhost:1234/v1" placeholder="LM Studio URL"
+         class="w-52 bg-surface-container-lowest border border-outline-variant/40 rounded px-2.5 py-1 text-body-sm text-on-surface placeholder:text-outline/60 focus:outline-none focus:border-badge-checkpoint"/>
+  <button id="btn-connect" class="sd-btn">
+    Connect
+  </button>
+
+  <!-- Model selector (populated after connect) -->
+  <select id="model-select" class="bg-surface-container border border-outline-variant/40 rounded px-2 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint">
+    <option value="">— select model —</option>
+  </select>
+</div>
+
+<!-- Saved prompt presets from the previous captioning version. -->
+<div class="shrink-0 flex flex-wrap items-center gap-2 px-4 py-1 border-b border-outline-variant/20 bg-surface-container/40 text-body-sm">
+  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap">Prompt Presets</span>
+  <select id="saved-prompt-select" class="min-w-0 flex-1 bg-surface-container-lowest border border-outline-variant/30 rounded px-2 py-1 text-body-sm text-on-surface"><option value="">Choose a saved prompt</option></select>
+  <button id="save-prompt-btn" class="sd-btn sd-btn-sm">Save current</button>
+  <button id="delete-prompt-btn" class="sd-btn sd-btn-sm sd-btn-danger">Delete selected</button>
+</div>
+
+<!-- ===== PROMPT / TRIGGER BAR ===== -->
+<div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-1.5 border-b border-outline-variant/20 bg-surface-container-lowest/60 text-body-sm">
+  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap">System Prompt</span>
+  <input id="prompt-input" type="text"
+         value="Write a short, detailed, natural-language caption for this image. Focus on the subject, style, and mood. Be concise."
+         class="flex-1 bg-transparent border border-outline-variant/30 rounded px-2.5 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
+  <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider whitespace-nowrap">Trigger Tag</span>
+  <input id="trigger-tag" type="text" placeholder="e.g. ohwx person" maxlength="120"
+         class="w-36 bg-transparent border border-outline-variant/30 rounded px-2.5 py-1 text-body-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
+</div>
+
+<!-- ===== PROGRESS BAR (hidden until batch) ===== -->
+<div id="progress-wrap" class="hidden shrink-0 px-4 py-2 border-b border-outline-variant/20 bg-surface-container/50">
+  <div class="flex items-center justify-between mb-1 text-body-sm">
+    <span id="progress-label" class="font-code-sm text-code-sm text-primary">Processing…</span>
+    <span id="progress-count" class="font-code-sm text-code-sm text-outline"></span>
+  </div>
+  <div class="w-full h-1.5 bg-surface-container-high rounded overflow-hidden">
+    <div id="progress-bar" class="progress-fill h-full bg-gradient-to-r from-badge-checkpoint to-badge-lora rounded" style="width:0%"></div>
+  </div>
+</div>
+
+<!-- ===== MAIN 2-COLUMN WORKSPACE ===== -->
+<main class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_15rem] gap-y-3 overflow-visible">
+
+  <!-- ===== LEFT: image grid ===== -->
+  <section class="w-full xl:w-auto min-h-[260px] max-h-[42vh] xl:max-h-none flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+    <!-- Stats strip -->
+    <div class="shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-outline-variant/15 text-body-sm">
+      <span id="grid-stats" class="font-code-sm text-code-sm text-outline">No folder loaded</span>
+      <div class="flex items-center gap-1">
+        <button id="filter-all"     class="filter-btn sd-btn sd-btn-pill" aria-pressed="true">All</button>
+        <button id="filter-untagged" class="filter-btn sd-btn sd-btn-pill" aria-pressed="false">Untagged</button>
+        <button id="filter-tagged"   class="filter-btn sd-btn sd-btn-pill" aria-pressed="false">Tagged</button>
+      </div>
+    </div>
+    <!-- Live disk explorer -->
+    <div id="explorer-rail" class="explorer-rail" aria-label="Folders"></div>
+    <!-- Grid scroll area -->
+    <div id="image-grid" class="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-1.5 content-start">
+      <div id="grid-empty" class="col-span-2 flex flex-col items-center justify-center h-40 text-outline text-body-sm gap-2">
+        <span class="material-symbols-outlined text-[32px]">folder_open</span>
+        <span>Load a folder to begin</span>
+      </div>
+    </div>
+    <!-- Pagination -->
+    <div id="pagination" class="hidden shrink-0 flex items-center justify-between px-3 py-1.5 border-t border-outline-variant/20 text-body-sm">
+      <button id="prev-page" class="sd-btn sd-btn-sm">Prev</button>
+      <span id="page-info" class="font-code-sm text-code-sm text-outline"></span>
+      <button id="next-page" class="sd-btn sd-btn-sm">Next</button>
+    </div>
+  </section>
+
+  <!-- ===== CENTER: active image inspection ===== -->
+  <section class="min-w-0 min-h-[520px] xl:min-h-0 xl:h-full flex flex-col xl:border-r border-outline-variant/20 overflow-hidden">
+    <!-- Image viewer -->
+    <div class="flex-1 min-h-0 relative bg-black/40 flex items-center justify-center overflow-hidden">
+      <img id="active-img" src="" alt="" class="max-w-full max-h-full object-contain hidden"/>
+      <div id="img-placeholder" class="flex flex-col items-center justify-center gap-3 text-outline">
+        <span class="material-symbols-outlined text-[48px]">image</span>
+        <span class="font-code-sm text-code-sm">Select an image</span>
+      </div>
+      <!-- Image info overlay -->
+      <div id="img-overlay" class="hidden absolute bottom-2 left-2 right-2 flex items-end justify-between">
+        <div class="flex items-center gap-2">
+          <span id="img-dims" class="font-code-sm text-[10px] bg-black/70 text-on-surface px-2 py-0.5 rounded"></span>
+          <span id="img-name" class="font-code-sm text-[10px] bg-black/70 text-on-surface px-2 py-0.5 rounded truncate max-w-48"></span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button id="btn-caption-single" class="sd-btn sd-btn-primary sd-btn-sm">
+            <span class="material-symbols-outlined text-[14px]">auto_awesome</span>
+            Caption
+          </button>
+          <button id="btn-dl-workflow" title="Download embedded ComfyUI workflow" class="sd-btn sd-btn-icon">
+            <span class="material-symbols-outlined text-[16px]">schema</span>
+          </button>
+        </div>
+      </div>
+      <!-- Single caption spinner -->
+      <div id="single-spinner" class="hidden absolute inset-0 bg-black/50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-3 text-primary">
+          <span class="material-symbols-outlined text-[36px] animate-spin">progress_activity</span>
+          <span class="font-code-sm text-code-sm">Captioning…</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Caption editor -->
+    <div class="shrink-0 flex flex-col border-t border-outline-variant/20 bg-surface-container-lowest/50" style="min-height:160px;max-height:280px;">
+      <div class="flex items-center justify-between px-3 py-1.5 border-b border-outline-variant/15">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-[14px] text-outline">edit_note</span>
+          <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">Caption</span>
+          <span id="caption-saved-badge" class="hidden font-label-sm text-[10px] leading-[1.5] px-2 py-0.5 rounded bg-status-active/20 text-status-active border border-status-active/30">Saved</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button id="btn-save-caption" class="sd-btn sd-btn-primary sd-btn-sm">
+            <span class="material-symbols-outlined text-[13px]">save</span> Save
+          </button>
+          <button id="btn-clear-caption" class="sd-btn sd-btn-sm sd-btn-danger">
+            <span class="material-symbols-outlined text-[13px]">clear</span>
+          </button>
+        </div>
+      </div>
+      <textarea id="caption-editor" class="flex-1 w-full bg-transparent px-3 py-2 text-body-md text-on-surface resize-none focus:outline-none placeholder:text-outline/50" placeholder="Caption will appear here after generation, or type manually…"></textarea>
+      <!-- Tag cloud extracted from caption -->
+      <div id="tag-cloud" class="px-3 pb-2 flex flex-wrap gap-1 min-h-0"></div>
+    </div>
+  </section>
+
+  <!-- ===== RIGHT: SD prompt inspector ===== -->
+  <aside class="w-full xl:w-auto min-h-[220px] flex flex-col xl:border-l border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+    <div class="shrink-0 px-3 py-2 border-b border-outline-variant/20">
+      <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">SD Prompt Inspector</span>
+    </div>
+    <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
+      <div>
+        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Positive</div>
+        <div id="sd-positive" class="font-code-sm text-code-sm text-on-surface-variant bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[40px] whitespace-pre-wrap">—</div>
+      </div>
+      <div>
+        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Negative</div>
+        <div id="sd-negative" class="font-code-sm text-code-sm text-status-alert/80 bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[30px] whitespace-pre-wrap">—</div>
+      </div>
+      <div>
+        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Settings</div>
+        <div id="sd-setting" class="font-code-sm text-code-sm text-on-surface-variant/70 bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[30px] whitespace-pre-wrap">—</div>
+      </div>
+      <div>
+        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Workflow</div>
+        <div id="sd-workflow" class="font-code-sm text-code-sm text-secondary/70 bg-surface-container p-2 rounded border border-outline-variant/20">—</div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- ===== FOLDER BROWSER (full Gallery page: folders, media grid and viewer) ===== -->
+<div id="folder-modal" class="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-title">
+  <div class="folder-modal-box">
+    <div class="folder-modal-head">
+      <strong id="folder-title">Browse folders &amp; images</strong>
+      <button id="close-folder" type="button">Close</button>
+    </div>
+    <iframe id="gallery-picker" class="gallery-picker" title="Browse folders and images"></iframe>
+    <div class="folder-modal-foot" id="gallery-foot" hidden>
+      <span class="path" id="gallery-current">Gallery</span>
+      <button id="use-folder" type="button" class="use">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const API = '/betacaption/api';
+let images     = [];      // current page array from /api/images
+let allImages  = [];      // flattened for grid filtering (loaded pages)
+let activeIdx  = -1;
+let folderPath = '';
+let page = 1, totalPages = 1, totalImages = 0;
+let filter = 'all';       // 'all' | 'tagged' | 'untagged'
+let batchPollTimer = null;
+let lastBatchEventId = 0;
+
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+const folderInput   = document.getElementById('folder-input');
+const lmUrl         = document.getElementById('lm-url');
+const modelSelect   = document.getElementById('model-select');
+const promptInput   = document.getElementById('prompt-input');
+const triggerTag    = document.getElementById('trigger-tag');
+const promptSelect  = document.getElementById('saved-prompt-select');
+const modeSelect    = document.getElementById('mode-select');
+const imageGrid     = document.getElementById('image-grid');
+const gridEmpty     = document.getElementById('grid-empty');
+const gridStats     = document.getElementById('grid-stats');
+const activeImg     = document.getElementById('active-img');
+const imgPlaceholder= document.getElementById('img-placeholder');
+const imgOverlay    = document.getElementById('img-overlay');
+const imgName       = document.getElementById('img-name');
+const imgDims       = document.getElementById('img-dims');
+const captionEditor = document.getElementById('caption-editor');
+const tagCloud      = document.getElementById('tag-cloud');
+const sdPos         = document.getElementById('sd-positive');
+const sdNeg         = document.getElementById('sd-negative');
+const sdSet         = document.getElementById('sd-setting');
+const sdWf          = document.getElementById('sd-workflow');
+const connBadge     = document.getElementById('conn-badge');
+const connBadgeErr  = document.getElementById('conn-badge-err');
+const connText      = document.getElementById('conn-text');
+const btnBatch      = document.getElementById('btn-batch');
+const btnStop       = document.getElementById('btn-stop');
+const progressWrap  = document.getElementById('progress-wrap');
+const progressBar   = document.getElementById('progress-bar');
+const progressLabel = document.getElementById('progress-label');
+const progressCount = document.getElementById('progress-count');
+const singleSpinner = document.getElementById('single-spinner');
+const captionSaved  = document.getElementById('caption-saved-badge');
+const pagination    = document.getElementById('pagination');
+const prevPage      = document.getElementById('prev-page');
+const nextPage      = document.getElementById('next-page');
+const pageInfo      = document.getElementById('page-info');
+
+// Keep caption options shared with Gallery's one-click and bulk caption actions.
+lmUrl.value = localStorage.getItem('captionLmStudioUrl') || lmUrl.value;
+promptInput.value = localStorage.getItem('captionPrompt') || promptInput.value;
+triggerTag.value = localStorage.getItem('captionTriggerTag') || '';
+folderInput.value = localStorage.getItem('captioningFolderPath') || '';
+lmUrl.addEventListener('change', () => localStorage.setItem('captionLmStudioUrl', lmUrl.value.trim()));
+promptInput.addEventListener('change', () => localStorage.setItem('captionPrompt', promptInput.value));
+triggerTag.addEventListener('change', () => localStorage.setItem('captionTriggerTag', triggerTag.value.trim()));
+folderInput.addEventListener('change', () => localStorage.setItem('captioningFolderPath', folderInput.value.trim()));
+modelSelect.addEventListener('change', () => localStorage.setItem('captionModel', modelSelect.value));
+
+function readPresets() {
+  let presets = [];
+  try { const value = JSON.parse(localStorage.getItem('savedCaptionPrompts') || '[]'); if (Array.isArray(value)) presets = value; } catch (_) {}
+  // Migrate legacy plain-string entries to named {name, text} objects.
+  let migrated = false;
+  presets = presets.map((entry) => {
+    if (typeof entry === 'string') {
+      migrated = true;
+      const text = entry.trim();
+      return { name: text.slice(0, 60), text };
+    }
+    if (entry && typeof entry.text === 'string' && entry.text.trim()) {
+      return { name: String(entry.name || '').trim() || entry.text.trim().slice(0, 60), text: entry.text };
+    }
+    migrated = true;
+    return null;
+  }).filter(Boolean);
+  if (migrated) { try { localStorage.setItem('savedCaptionPrompts', JSON.stringify(presets)); } catch (_) {} }
+  return presets;
+}
+function escHtml(value) {
+  return String(value ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function loadPromptPresets() {
+  const presets = readPresets();
+  promptSelect.innerHTML = '<option value="">Choose a saved prompt</option>' + presets.map((preset, index) => `<option value="${index}">${escHtml(preset.name)}</option>`).join('');
+  promptSelect.onchange = () => {
+    if (promptSelect.value !== '') {
+      const preset = presets[Number(promptSelect.value)];
+      if (preset) {
+        promptInput.value = preset.text;
+        try { localStorage.setItem('captionPrompt', preset.text); } catch (_) {}
+      }
+    }
+  };
+}
+loadPromptPresets();
+document.getElementById('save-prompt-btn').addEventListener('click', () => {
+  const value = promptInput.value.trim(); if (!value) return;
+  const fallback = value.length > 60 ? value.slice(0, 60) + '…' : value;
+  const name = window.prompt('Name this system prompt preset:', fallback);
+  if (name === null) return; // cancelled
+  const label = name.trim() || fallback;
+  const presets = readPresets();
+  const existing = presets.findIndex((p) => p.name.toLowerCase() === label.toLowerCase());
+  if (existing >= 0) presets[existing] = { name: label, text: value };
+  else presets.push({ name: label, text: value });
+  localStorage.setItem('savedCaptionPrompts', JSON.stringify(presets)); loadPromptPresets();
+  promptSelect.value = String(existing >= 0 ? existing : presets.length - 1);
+});
+document.getElementById('delete-prompt-btn').addEventListener('click', () => {
+  if (promptSelect.value === '') return;
+  const presets = readPresets();
+  presets.splice(Number(promptSelect.value), 1); localStorage.setItem('savedCaptionPrompts', JSON.stringify(presets)); loadPromptPresets();
+});
+
+// ─── Connect to LM Studio ─────────────────────────────────────────────────────
+document.getElementById('btn-connect').addEventListener('click', checkConnection);
+
+async function checkConnection() {
+  const url = lmUrl.value.trim();
+  connBadge.classList.add('hidden'); connBadgeErr.classList.add('hidden');
+  try {
+    const r = await fetch(`${API}/check-connection`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ lmStudioUrl: url }),
+    });
+    const d = await r.json();
+    if (d.connected) {
+      connBadge.classList.remove('hidden');
+      connBadge.classList.add('flex');
+      connText.textContent = d.warning ? 'Server responding' : `Connected (${(d.models||[]).length} models)`;
+      // Populate model selector
+      modelSelect.innerHTML = '<option value="">— select model —</option>';
+      for (const m of (d.models||[])) {
+        const o = document.createElement('option');
+        o.value = m.id; o.textContent = m.id;
+        modelSelect.appendChild(o);
+      }
+      const savedModel = localStorage.getItem('captionModel');
+      if (savedModel && [...modelSelect.options].some(o => o.value === savedModel)) modelSelect.value = savedModel;
+      if (!savedModel && d.models && d.models.length === 1) modelSelect.value = d.models[0].id;
+      localStorage.setItem('captionModel', modelSelect.value);
+      localStorage.setItem('captionLmStudioUrl', lmUrl.value.trim());
+      enableBatch();
+    } else {
+      connBadgeErr.classList.remove('hidden'); connBadgeErr.classList.add('flex');
+    }
+  } catch(e) {
+    connBadgeErr.classList.remove('hidden'); connBadgeErr.classList.add('flex');
+  }
+}
+
+function enableBatch() {
+  if (folderPath && modelSelect.value) btnBatch.disabled = false;
+  else btnBatch.disabled = true;
+}
+
+// ─── Load folder ──────────────────────────────────────────────────────────────
+document.getElementById('btn-load').addEventListener('click', () => loadFolder(folderInput.value.trim()));
+
+const explorerRail = document.getElementById('explorer-rail');
+
+/** Live on-disk explorer: breadcrumb + subfolders with media counts. */
+async function renderExplorer() {
+  if (!folderPath) return;
+  try {
+    const response = await fetch(`${API}/folders?path=${encodeURIComponent(folderPath)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to read folder');
+    explorerRail.replaceChildren();
+
+    const parts = String(data.cwd || folderPath).split('/').filter(Boolean);
+    let running = '';
+    parts.forEach((part, index) => {
+      running += `/${part}`;
+      if (index > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'explorer-sep';
+        sep.textContent = '›';
+        explorerRail.appendChild(sep);
+      }
+      const crumb = document.createElement('button');
+      crumb.type = 'button';
+      crumb.className = `explorer-chip${index === parts.length - 1 ? ' current' : ''}`;
+      crumb.textContent = part;
+      crumb.title = running;
+      crumb.addEventListener('click', () => loadFolder(running).catch(error => alert(error.message)));
+      explorerRail.appendChild(crumb);
+    });
+
+    if (data.parent && data.parent !== data.cwd) {
+      const up = document.createElement('button');
+      up.type = 'button';
+      up.className = 'explorer-chip';
+      up.textContent = '↑';
+      up.title = `Up to ${data.parent}`;
+      up.addEventListener('click', () => loadFolder(data.parent).catch(error => alert(error.message)));
+      explorerRail.appendChild(up);
+    }
+
+    for (const folder of data.folders || []) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'explorer-chip';
+      chip.title = folder.path;
+      const label = document.createElement('span');
+      label.textContent = folder.name;
+      const count = document.createElement('span');
+      count.className = 'n';
+      count.textContent = String(folder.count ?? 0);
+      chip.append(label, count);
+      chip.addEventListener('click', () => loadFolder(folder.path).catch(error => alert(error.message)));
+      explorerRail.appendChild(chip);
+    }
+  } catch (error) {
+    explorerRail.textContent = error.message;
+  }
+}
+
+async function loadFolder(path) {
+  if (!path) return;
+  folderPath = path;
+  folderInput.value = path;
+  localStorage.setItem('captioningFolderPath', path);
+  page = 1; allImages = [];
+  renderExplorer();
+  await fetchPage();
+  enableBatch();
+}
+
+async function fetchPage() {
+  try {
+    const u = `${API}/images?folderPath=${encodeURIComponent(folderPath)}&page=${page}&limit=40`;
+    const r = await fetch(u);
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    images = d.images || [];
+    totalPages = d.totalPages || 1;
+    totalImages = d.total || images.length;
+    allImages = images;
+    renderGrid();
+    updatePagination();
+  } catch(e) { alert('Failed to load images: ' + e.message); }
+}
+
+// ─── Grid rendering ───────────────────────────────────────────────────────────
+function renderGrid() {
+  // Apply filter
+  let visible = allImages;
+  if (filter === 'tagged')   visible = allImages.filter(i => i.hasCaption);
+  if (filter === 'untagged') visible = allImages.filter(i => !i.hasCaption);
+
+  const tagged   = allImages.filter(i => i.hasCaption).length;
+  const untagged = allImages.length - tagged;
+  gridStats.textContent = `${allImages.length} images • ${tagged} tagged • ${untagged} untagged`;
+
+  // Clear and rebuild
+  imageGrid.innerHTML = '';
+  if (visible.length === 0) {
+    const el = document.createElement('div');
+    el.className = 'col-span-2 flex flex-col items-center justify-center h-24 text-outline text-body-sm gap-1';
+    el.innerHTML = '<span class="material-symbols-outlined text-[24px]">filter_none</span><span>No images match filter</span>';
+    imageGrid.appendChild(el);
+    return;
+  }
+
+  visible.forEach((img, idx) => {
+    const realIdx = allImages.indexOf(img);
+    const card = document.createElement('div');
+    card.className = `asset-card relative group rounded-lg overflow-hidden border ${img.hasCaption ? 'border-status-active/30' : 'border-outline-variant/30'} hover:border-badge-checkpoint/60 bg-surface-container/30 p-1 cursor-pointer transition-all`;
+    card.innerHTML = `
+      <div class="asset-thumbnail relative rounded overflow-hidden">
+        <img src="${img.url}" alt="${img.file}" loading="lazy" class="w-full h-full object-cover"/>
+        <div class="absolute bottom-1 right-1">
+          <span class="font-label-sm text-[10px] px-2 py-0.5 rounded font-bold ${img.hasCaption ? 'bg-status-active/90 text-surface-container-lowest' : 'bg-status-warning/90 text-surface-container-lowest'}">
+            ${img.hasCaption ? 'Tagged' : 'Pending'}
+          </span>
+        </div>
+        ${img.hasWorkflow ? '<div class="absolute top-1 right-1"><span class="material-symbols-outlined text-[12px] text-secondary bg-black/60 rounded p-0.5">schema</span></div>' : ''}
+      </div>
+      <div class="pt-1 px-0.5">
+        <span class="font-code-sm text-[10px] text-on-surface-variant truncate block">${img.file}</span>
+        <span class="font-code-sm text-[10px] text-outline truncate block">${img.width ? `${img.width}×${img.height}` : ''}${img.size ? ` · ${(img.size / 1048576).toFixed(1)} MB` : ''}</span>
+      </div>`;
+    card.addEventListener('click', () => selectImage(realIdx));
+    if (realIdx === activeIdx) card.classList.add('active');
+    imageGrid.appendChild(card);
+  });
+}
+
+function selectImage(idx) {
+  activeIdx = idx;
+  const img = allImages[idx];
+  if (!img) return;
+
+  // Update active visual
+  document.querySelectorAll('.asset-card').forEach(c => c.classList.remove('active'));
+
+  activeImg.src = img.url || '';
+  activeImg.alt = img.file;
+  activeImg.classList.remove('hidden');
+  imgPlaceholder.classList.add('hidden');
+  imgOverlay.classList.remove('hidden');
+  imgName.textContent = img.file;
+  imgDims.textContent = img.width ? `${img.width}×${img.height}` : '';
+
+  // Caption
+  captionEditor.value = img.caption || '';
+  renderTagCloud(img.caption || '');
+
+  // SD info
+  sdPos.textContent = img.sdPrompt   || '—';
+  sdNeg.textContent = img.sdNegative || '—';
+  sdSet.textContent = img.sdSetting  || '—';
+  sdWf.textContent  = img.hasWorkflow ? '✓ Embedded workflow' : '—';
+
+  // Re-render grid to show active state (only update borders)
+  document.querySelectorAll('.asset-card').forEach((c, i) => {
+    // find which card maps to idx
+    if (parseInt(c.dataset.idx || -1) === idx) c.classList.add('active');
+  });
+  renderGrid(); // re-render to mark active card
+}
+
+// ─── Tag cloud ────────────────────────────────────────────────────────────────
+function renderTagCloud(text) {
+  tagCloud.innerHTML = '';
+  if (!text) return;
+  const tags = text.split(/[,\n]+/).map(t => t.trim()).filter(Boolean);
+  const shown = new Set();
+  tags.forEach(t => {
+    if (shown.has(t.toLowerCase()) || t.length < 2) return;
+    shown.add(t.toLowerCase());
+    const pill = document.createElement('span');
+    pill.className = 'tag-pill inline-flex items-center px-2 py-0.5 rounded bg-badge-lora/15 border border-badge-lora/30 text-primary font-code-sm text-[10px]';
+    pill.textContent = t.length > 30 ? t.substring(0, 28) + '…' : t;
+    pill.title = 'Click to remove';
+    pill.addEventListener('click', () => {
+      const lines = captionEditor.value.split(/,\s*|\n/);
+      captionEditor.value = lines.filter(l => l.trim().toLowerCase() !== t.toLowerCase()).join(', ');
+      renderTagCloud(captionEditor.value);
+    });
+    tagCloud.appendChild(pill);
+  });
+}
+captionEditor.addEventListener('input', () => renderTagCloud(captionEditor.value));
+
+// ─── Save caption ─────────────────────────────────────────────────────────────
+document.getElementById('btn-save-caption').addEventListener('click', saveCaption);
+document.getElementById('btn-clear-caption').addEventListener('click', () => {
+  captionEditor.value = ''; renderTagCloud('');
+});
+
+async function saveCaption() {
+  const img = allImages[activeIdx];
+  if (!img || !folderPath) return;
+  const text = captionEditor.value.trim();
+  try {
+    const r = await fetch(`${API}/save-caption`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ folderPath, fileName: img.file, caption: text }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      img.caption = text; img.hasCaption = Boolean(text);
+      captionSaved.classList.remove('hidden');
+      setTimeout(() => captionSaved.classList.add('hidden'), 2000);
+      renderTagCloud(text);
+      renderGrid();
+    }
+  } catch(e) { alert('Save failed: ' + e.message); }
+}
+
+// ─── Single caption ───────────────────────────────────────────────────────────
+document.getElementById('btn-caption-single').addEventListener('click', async () => {
+  const img = allImages[activeIdx];
+  if (!img) return;
+  const model = modelSelect.value;
+  if (!model) { alert('Select a model first (click Connect to load models)'); return; }
+
+  singleSpinner.classList.remove('hidden');
+  try {
+    const r = await fetch(`${API}/caption-single`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        folderPath: folderPath,
+        fileName: img.file,
+        prompt: promptInput.value,
+        lmStudioUrl: lmUrl.value,
+        model: model,
+        triggerTag: triggerTag.value,
+      }),
+    });
+    const d = await r.json();
+    if (d.caption) {
+      captionEditor.value = d.caption;
+      img.caption = d.caption; img.hasCaption = true;
+      if (d.sdPrompt)   sdPos.textContent = d.sdPrompt;
+      if (d.sdNegative) sdNeg.textContent = d.sdNegative;
+      if (d.sdSetting)  sdSet.textContent = d.sdSetting;
+      sdWf.textContent = d.hasWorkflow ? '✓ Embedded workflow' : '—';
+      renderTagCloud(d.caption);
+      renderGrid();
+    } else {
+      alert('Caption error: ' + (d.error || 'Unknown'));
+    }
+  } catch(e) { alert('Caption failed: ' + e.message); }
+  finally { singleSpinner.classList.add('hidden'); }
+});
+
+// ─── Download workflow ────────────────────────────────────────────────────────
+document.getElementById('btn-dl-workflow').addEventListener('click', () => {
+  const img = allImages[activeIdx];
+  if (!img || !img.hasWorkflow) { alert('No embedded workflow in this image'); return; }
+  window.location = `${API}/workflow?folderPath=${encodeURIComponent(folderPath)}&file=${encodeURIComponent(img.file)}`;
+});
+
+// ─── Batch caption ────────────────────────────────────────────────────────────
+btnBatch.addEventListener('click', startBatch);
+btnStop.addEventListener('click', stopBatch);
+
+async function startBatch() {
+  const model = modelSelect.value;
+  if (!model) { alert('Select a model first'); return; }
+  if (!folderPath) { alert('Load a folder first'); return; }
+
+  setBatchUi(true);
+  progressWrap.classList.remove('hidden');
+  progressBar.style.width = '0%';
+  progressLabel.textContent = 'Starting…';
+  lastBatchEventId = 0;
+  const body = JSON.stringify({
+    folderPath, prompt: promptInput.value, lmStudioUrl: lmUrl.value,
+    model, mode: modeSelect.value || undefined, triggerTag: triggerTag.value,
+  });
+  try {
+    const r = await fetch(`${API}/batch/start`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body,
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || `Request failed (${r.status})`);
+    if (batchPollTimer) clearInterval(batchPollTimer);
+    batchPollTimer = setInterval(pollBatch, 1500);
+    await pollBatch();
+  } catch(e) {
+    progressLabel.textContent = `⚠ ${e.message}`;
+    endBatch();
+  }
+}
+
+async function pollBatch() {
+  try {
+    const r = await fetch(`${API}/batch/status?since=${lastBatchEventId}`, { cache: 'no-store' });
+    const d = await r.json();
+    if (d.folderPath) {
+      folderPath = d.folderPath;
+      folderInput.value = folderPath;
+      localStorage.setItem('captioningFolderPath', folderPath);
+    }
+    if (d.state === 'running' || d.state === 'cancelling') {
+      setBatchUi(true);
+      progressWrap.classList.remove('hidden');
+      if (!d.events.length) {
+        progressLabel.textContent = d.state === 'cancelling' ? 'Stopping…' : (d.file ? `Processing ${d.file}…` : 'Captioning in background…');
+        progressCount.textContent = `${d.current}/${d.total}`;
+        progressBar.style.width = `${d.total ? (d.current / d.total) * 100 : 0}%`;
+      }
+    }
+    for (const ev of d.events || []) {
+      lastBatchEventId = Math.max(lastBatchEventId, ev.eventId || 0);
+      handleSSEEvent(ev);
+    }
+    if (d.state === 'complete' || d.state === 'cancelled') {
+      if (batchPollTimer) clearInterval(batchPollTimer);
+      batchPollTimer = null;
+      if (d.state === 'complete' && !d.events.some(ev => ev.status === 'complete')) {
+        progressLabel.textContent = `✓ Done — ${d.current}/${d.total} images processed`;
+        progressBar.style.width = '100%';
+      } else if (d.state === 'cancelled' && !d.events.some(ev => ev.status === 'cancelled')) {
+        progressLabel.textContent = `Stopped — ${d.current}/${d.total} images processed`;
+      }
+      endBatch();
+      if (folderPath) { page = 1; await fetchPage(); }
+    }
+  } catch (e) {
+    progressLabel.textContent = `Reconnecting to caption batch…`;
+  }
+}
+
+async function stopBatch() {
+  btnStop.disabled = true;
+  btnStop.querySelector('span:last-child').textContent = 'Stopping…';
+  try { await fetch(`${API}/batch/stop`, { method: 'POST' }); }
+  catch (_) { /* job remains active; later status polling can reconnect */ }
+}
+
+function setBatchUi(running) {
+  btnBatch.classList.toggle('hidden', running);
+  btnStop.classList.toggle('hidden', !running);
+  btnStop.classList.toggle('flex', running);
+  btnStop.disabled = false;
+  btnStop.querySelector('span:last-child').textContent = 'Stop';
+}
+
+function handleSSEEvent(ev) {
+  if (ev.status === 'started') {
+    progressLabel.textContent = `Processing ${ev.file}…`;
+    progressCount.textContent = `${ev.current}/${ev.total}`;
+    progressBar.style.width = `${(ev.current / ev.total) * 100}%`;
+  } else if (ev.status === 'success') {
+    progressLabel.textContent = ev.skipped ? `Skipped ${ev.file}` : `✓ ${ev.file}`;
+    progressCount.textContent = `${ev.current}/${ev.total}`;
+    progressBar.style.width = `${(ev.current / ev.total) * 100}%`;
+    // Update local image data
+    const found = allImages.find(i => i.file === ev.file);
+    if (found) { found.caption = ev.caption; found.hasCaption = true; }
+    if (allImages[activeIdx] && allImages[activeIdx].file === ev.file) {
+      captionEditor.value = ev.caption;
+      renderTagCloud(ev.caption);
+    }
+    renderGrid();
+  } else if (ev.status === 'error') {
+    progressLabel.textContent = `⚠ Error: ${ev.file} — ${ev.error}`;
+  } else if (ev.status === 'complete') {
+    progressLabel.textContent = `✓ Done — ${ev.total} images processed`;
+    progressBar.style.width = '100%';
+    renderGrid();
+  } else if (ev.status === 'cancelled') {
+    progressLabel.textContent = `Stopped — ${ev.current}/${ev.total} images processed`;
+  }
+}
+
+function endBatch() { setBatchUi(false); }
+
+
+// ─── Filter buttons ───────────────────────────────────────────────────────────
+['filter-all','filter-untagged','filter-tagged'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function() {
+    filter = id.replace('filter-','');
+    document.querySelectorAll('.filter-btn').forEach(b => {
+      b.setAttribute('aria-pressed', 'false');
+    });
+    this.setAttribute('aria-pressed', 'true');
+    renderGrid();
+  });
+});
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+function updatePagination() {
+  if (totalPages <= 1) { pagination.classList.add('hidden'); return; }
+  pagination.classList.remove('hidden');
+  pageInfo.textContent = `${page} / ${totalPages}`;
+  prevPage.disabled = page <= 1;
+  nextPage.disabled = page >= totalPages;
+}
+
+prevPage.addEventListener('click', () => { if (page > 1) { page--; fetchPage(); } });
+nextPage.addEventListener('click', () => { if (page < totalPages) { page++; fetchPage(); } });
+
+// ─── Model select → enable batch ─────────────────────────────────────────────
+modelSelect.addEventListener('change', enableBatch);
+
+// ─── Folder browser (full Gallery plugin page) ───────────────────────────────
+// The real Gallery browser is embedded (folder navigation, media grid and the
+// image viewer), so choosing a folder here matches browsing in the Gallery
+// space. The footer reads the iframe's `album` URL parameter to know which
+// folder is open; the small picker stays as a fallback when the caption folder
+// lives outside the Gallery root.
+const folderModal = document.getElementById('folder-modal');
+const galleryPicker = document.getElementById('gallery-picker');
+const galleryFoot = document.getElementById('gallery-foot');
+const galleryCurrent = document.getElementById('gallery-current');
+const GALLERY_PAGE = '/api/plugins/betacaption/page/browser';
+const GALLERY_STATUS = '/betacaption/gallery/api/status';
+const trimPath = (p) => String(p || '').replace(/\/+$/, '');
+let browseMode = '';
+let browseRoot = '';
+let browseTimer = 0;
+
+async function galleryRoot() {
+  try {
+    const response = await fetch(GALLERY_STATUS, { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) return '';
+    const data = await response.json();
+    return trimPath(data.root);
+  } catch (_) { return ''; }
+}
+
+function galleryAlbum() {
+  try {
+    const url = new URL(galleryPicker.contentWindow.location.href);
+    return url.searchParams.get('album') || '';
+  } catch (_) { return ''; }
+}
+
+function syncGalleryPath() {
+  if (browseMode !== 'gallery') return;
+  const album = galleryAlbum();
+  galleryCurrent.textContent = album ? `${browseRoot}/${album}` : browseRoot;
+}
+
+function closeFolderPicker() {
+  folderModal.classList.remove('open');
+  if (browseTimer) { clearInterval(browseTimer); browseTimer = 0; }
+}
+
+async function openFolders() {
+  const current = trimPath(folderInput.value);
+  // Start at the configured root that contains the current folder, so folder
+  // navigation can walk all the way up.
+  let root = current;
+  try {
+    const response = await fetch(`${API}/browse-roots`);
+    const data = await response.json();
+    const roots = (data.roots || []).map((p) => trimPath(p));
+    const match = roots
+      .filter((p) => current === p || current.startsWith(`${p}/`))
+      .sort((a, b) => b.length - a.length)[0];
+    if (match) root = match;
+  } catch (_) { /* default root is fine */ }
+
+  const gallery = await galleryRoot();
+  const insideGallery = gallery && (!current || current === gallery || current.startsWith(`${gallery}/`));
+  if (insideGallery) {
+    browseMode = 'gallery';
+    browseRoot = gallery;
+    const album = !current || current === gallery ? '' : current.slice(gallery.length + 1);
+    galleryPicker.src = `${GALLERY_PAGE}?album=${encodeURIComponent(album)}`;
+    galleryFoot.hidden = false;
+  } else {
+    browseMode = 'picker';
+    browseRoot = root;
+    const params = new URLSearchParams({ mode: 'folder' });
+    if (root) params.set('root', root);
+    galleryPicker.src = `/api/plugins/betacaption/page/picker?${params.toString()}`;
+    galleryFoot.hidden = true;
+  }
+  folderModal.classList.add('open');
+  if (browseTimer) { clearInterval(browseTimer); browseTimer = 0; }
+  if (browseMode === 'gallery') {
+    syncGalleryPath();
+    browseTimer = setInterval(syncGalleryPath, 600);
+  }
+}
+
+function useGalleryFolder() {
+  if (browseMode !== 'gallery') return;
+  applyPickedFolder({ path: browseRoot, relative: galleryAlbum() });
+}
+function applyPickedFolder(data) {
+  const relative = String(data.relative || '').replace(/^\/+|\/+$/g, '');
+  const root = String(data.path || '').replace(/\/+$/, '');
+  const chosen = relative ? `${root}/${relative}` : root;
+  closeFolderPicker();
+  folderInput.value = chosen;
+  loadFolder(chosen).catch(error => alert(error.message));
+}
+
+document.getElementById('btn-browse').addEventListener('click', openFolders);
+document.getElementById('use-folder').addEventListener('click', useGalleryFolder);
+document.getElementById('close-folder').addEventListener('click', closeFolderPicker);
+folderModal.addEventListener('click', (event) => { if (event.target === folderModal) closeFolderPicker(); });
+window.addEventListener('message', (event) => {
+  if (event.origin !== window.location.origin) return;
+  if (event.data?.type === 'sdcodex:pick') applyPickedFolder(event.data);
+  if (event.data?.type === 'sdcodex:pick-cancel') closeFolderPicker();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && folderModal.classList.contains('open')) closeFolderPicker();
+});
+
+async function restorePageState() {
+  if (folderInput.value.trim()) {
+    await loadFolder(folderInput.value.trim());
+  } else {
+    // Land on the live disk explorer instead of an empty grid.
+    try {
+      const rr = await fetch(`${API}/browse-roots`);
+      const rd = await rr.json();
+      const roots = rd.roots || [];
+      const preferred = roots.find(p => p === '/data/downloads')
+        || roots.find(p => p === '/data')
+        || roots[0];
+      if (preferred) await loadFolder(preferred);
+    } catch (_) { /* leave the empty state */ }
+  }
+  try {
+    const storedFolder = localStorage.getItem('captioningFolderPath') || '';
+    const r = await fetch(`${API}/batch/status?since=0`, { cache: 'no-store' });
+    const d = await r.json();
+    if (d.folderPath) {
+      folderPath = d.folderPath; folderInput.value = folderPath;
+      localStorage.setItem('captioningFolderPath', folderPath);
+      if (d.folderPath !== storedFolder) { page = 1; await fetchPage(); }
+    }
+    if (d.state === 'running' || d.state === 'cancelling') {
+      lastBatchEventId = 0; setBatchUi(true); progressWrap.classList.remove('hidden');
+      if (batchPollTimer) clearInterval(batchPollTimer);
+      batchPollTimer = setInterval(pollBatch, 1500);
+      await pollBatch();
+    } else if (d.state === 'complete' && d.folderPath) {
+      progressWrap.classList.remove('hidden');
+      progressLabel.textContent = `✓ Done — ${d.current}/${d.total} images processed`;
+      progressCount.textContent = `${d.current}/${d.total}`;
+      progressBar.style.width = '100%';
+    }
+  } catch (_) { /* backend may not have a batch yet */ }
+}
+void restorePageState().then(() => {
+  // Nothing on screen means the saved root is wrong/empty: open the shared
+  // Gallery browser immediately so the user can browse to real media.
+  if (!allImages.length) openFolders();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SDCodex – Caption Models</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "background": "#0f131c", "surface": "#0f131c",
+        "surface-container-lowest": "#0a0e17",
+        "surface-container-low":  "#181b25",
+        "surface-container":      "#1c1f29",
+        "surface-container-high": "#262a34",
+        "on-surface":             "#dfe2ef",
+        "on-surface-variant":     "#c7c4d7",
+        "primary":                "#c0c1ff",
+        "outline":                "#908fa0",
+        "outline-variant":        "#464554",
+        "slate-bg":               "#0F172A",
+        "slate-surface":          "#1E293B",
+        "badge-checkpoint":       "#6366F1",
+        "badge-lora":             "#8B5CF6",
+        "secondary":              "#4cd7f6",
+        "status-active":          "#10B981",
+        "status-warning":         "#F59E0B",
+        "status-alert":           "#EF4444",
+      },
+    }
+  }
+}
+</script>
+<style>
+  .material-symbols-outlined { font-variation-settings:'FILL' 0,'wght' 400,'GRAD' 0,'opsz' 20; line-height:1; display:inline-block; vertical-align:middle; }
+  ::-webkit-scrollbar { width:4px; }
+  ::-webkit-scrollbar-track { background:rgba(10,14,23,0.6); }
+  ::-webkit-scrollbar-thumb { background:rgba(51,65,85,0.6); border-radius:2px; }
+  .progress-fill { transition: width 0.4s ease; }
+  /* Gallery-style folder browser: breadcrumb path bar + keyboard-navigable rows. */
+  .browse-crumb { padding:3px 6px; border:0; border-radius:5px; background:transparent; color:#a5b4fc; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer; }
+  .browse-crumb:hover { background:rgba(255,255,255,0.08); color:#fff; }
+  .browse-crumb.current { color:#fff; }
+  .browse-crumb-sep { padding:0 1px; color:#64748b; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:13px; font-weight:700; }
+  .browse-row { display:flex; align-items:center; gap:9px; width:100%; margin:2px 0; padding:8px 10px; text-align:left; border:1px solid transparent; border-radius:5px; background:transparent; color:#c7ccd8; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:12px; cursor:pointer; overflow-wrap:anywhere; }
+  .browse-row:hover, .browse-row.active { border-color:rgba(99,102,241,0.45); background:rgba(99,102,241,0.14); color:#fff; }
+  .browse-row svg { flex:0 0 auto; color:#8a94a6; }
+  .browse-row:hover svg, .browse-row.active svg { color:#a5b4fc; }
+  .browse-row.choose { margin-bottom:6px; border-color:rgba(99,102,241,0.4); background:rgba(99,102,241,0.16); color:#e0e7ff; font-weight:600; }
+  .browse-row.up { color:#8a94a6; }
+</style>
+</head>
+<body class="bg-surface-container-lowest text-on-surface" style="font-family:Inter,sans-serif;font-size:14px;">
+
+<div class="max-w-2xl mx-auto p-6 flex flex-col gap-6">
+
+  <!-- Header -->
+  <div class="flex items-center gap-3">
+    <span class="material-symbols-outlined text-badge-lora text-[24px]">model_training</span>
+    <div>
+      <h1 style="font-family:Geist,sans-serif;font-size:18px;font-weight:700;line-height:1.2;">Caption Models</h1>
+      <p class="text-on-surface-variant text-xs">Download Qwen3-VL-8B GGUF captioning models from HuggingFace to your Caption Models volume.</p>
+    </div>
+  </div>
+
+  <!-- Settings card -->
+  <div class="rounded-lg border border-outline-variant/30 bg-surface-container p-4 flex flex-col gap-4">
+    <h2 style="font-family:Geist,sans-serif;font-size:14px;font-weight:600;" class="text-on-surface flex items-center gap-2">
+      <span class="material-symbols-outlined text-[16px] text-outline">settings</span>
+      HuggingFace Settings
+    </h2>
+    <div class="flex flex-col gap-3">
+      <p class="text-xs text-on-surface-variant">HuggingFace access keys are managed in Settings → API keys.</p>
+      <div>
+        <label class="block text-xs text-on-surface-variant mb-1">Model Repository</label>
+        <input id="hf-repo" type="text" value="nakedlittlezombie/Qwen3-VL-8B-Thinking-heretic"
+               class="w-full bg-surface-container-lowest border border-outline-variant/40 rounded px-3 py-1.5 text-sm text-on-surface focus:outline-none focus:border-badge-checkpoint"/>
+        <p class="text-xs text-outline mt-1">HuggingFace repo ID, e.g. <code>username/model-name</code></p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="btn-save" class="sd-btn sd-btn-primary">
+        Save Settings
+      </button>
+      <span id="save-msg" class="hidden text-xs text-status-active">✓ Saved</span>
+    </div>
+  </div>
+
+  <!-- ComfyUI node pack -->
+  <div class="rounded-lg border border-outline-variant/30 bg-surface-container p-4 flex flex-col gap-4">
+    <h2 style="font-family:Geist,sans-serif;font-size:14px;font-weight:600;" class="text-on-surface flex items-center gap-2">
+      <span class="material-symbols-outlined text-[16px] text-outline">extension</span>
+      ComfyUI Node Pack
+    </h2>
+    <p class="text-xs text-on-surface-variant">Choose your ComfyUI installation folder. The SDCodex nodes will be copied into its <code>custom_nodes/comfyui-sdcodex</code> folder. Restart ComfyUI after installing or updating.</p>
+    <div>
+      <label for="comfyui-dir" class="block text-xs text-on-surface-variant mb-1">ComfyUI installation directory</label>
+      <div class="flex gap-2">
+        <input id="comfyui-dir" type="text" placeholder="/path/to/ComfyUI"
+               class="min-w-0 flex-1 bg-surface-container-lowest border border-outline-variant/40 rounded px-3 py-1.5 text-sm text-on-surface font-mono focus:outline-none focus:border-badge-checkpoint"/>
+        <button id="btn-browse-comfyui" class="sd-btn shrink-0">Browse</button>
+      </div>
+      <p class="text-xs text-outline mt-1">The folder must contain <code>main.py</code>. In Docker mode, this path must be mounted and visible to the SDCodex container.</p>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <button id="btn-set-comfyui-dir" class="sd-btn">
+        Set Directory
+      </button>
+      <button id="btn-install-nodes" disabled class="sd-btn sd-btn-primary">
+        Install Nodes
+      </button>
+      <span id="nodes-status" role="status" class="text-xs text-on-surface-variant"></span>
+    </div>
+    <p id="nodes-location" class="text-xs text-outline font-mono break-all"></p>
+  </div>
+
+  <div id="comfyui-browse-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="bg-surface-container w-full max-w-lg mx-4 rounded-lg border border-outline-variant/30 shadow-2xl flex flex-col overflow-hidden" style="max-height:75vh;">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-outline-variant/20">
+        <span style="font-family:Geist,sans-serif;font-size:14px;font-weight:600;">Choose ComfyUI Folder</span>
+        <button id="comfyui-browse-close" class="sd-btn sd-btn-icon" aria-label="Close">×</button>
+      </div>
+      <div id="comfyui-browse-roots" class="flex flex-wrap gap-1 p-2 border-b border-outline-variant/20"></div>
+      <div id="comfyui-browse-path" class="flex items-center gap-0.5 px-3 py-2 border-b border-outline-variant/15 overflow-x-auto" aria-label="Folder path"></div>
+      <div class="flex items-center gap-2 px-3 py-2 border-b border-outline-variant/15">
+        <input id="comfyui-browse-filter" type="search" placeholder="Filter folders…" autocomplete="off" aria-label="Filter folders"
+               class="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/30 rounded px-2 py-1 font-mono text-xs text-on-surface placeholder:text-outline/60 focus:outline-none focus:border-badge-checkpoint"/>
+        <span id="comfyui-browse-count" class="font-mono text-[10px] text-outline whitespace-nowrap">0 folders</span>
+      </div>
+      <div id="comfyui-browse-list" class="flex-1 min-h-24 overflow-y-auto p-2" role="listbox" aria-label="Folders"></div>
+      <div class="px-4 py-3 border-t border-outline-variant/20 flex items-center justify-between gap-2">
+        <span class="font-mono text-[10px] text-outline">↑↓ move · Enter open · Esc close</span>
+        <div class="flex gap-2">
+          <button id="comfyui-browse-cancel" class="sd-btn">Cancel</button>
+          <button id="comfyui-browse-select" class="sd-btn sd-btn-primary">Select Folder</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Models list -->
+  <div class="rounded-lg border border-outline-variant/30 bg-surface-container p-4 flex flex-col gap-3">
+    <div class="flex items-center justify-between">
+      <h2 style="font-family:Geist,sans-serif;font-size:14px;font-weight:600;" class="text-on-surface flex items-center gap-2">
+        <span class="material-symbols-outlined text-[16px] text-outline">download</span>
+        Preset Models
+      </h2>
+      <span id="models-dir" class="text-xs text-outline font-mono"></span>
+    </div>
+    <div id="options-list" class="flex flex-col gap-2"></div>
+  </div>
+
+  <!-- Download progress -->
+  <div id="dl-progress" class="hidden rounded-lg border border-outline-variant/30 bg-surface-container p-4 flex flex-col gap-3">
+    <div class="flex items-center justify-between">
+      <span id="dl-file" class="text-xs font-mono text-primary truncate"></span>
+      <button id="btn-stop" class="sd-btn sd-btn-danger">
+        Stop
+      </button>
+    </div>
+    <div class="w-full h-2 bg-surface-container-lowest rounded overflow-hidden">
+      <div id="dl-bar" class="progress-fill h-full bg-gradient-to-r from-badge-checkpoint to-badge-lora rounded" style="width:0%"></div>
+    </div>
+    <div class="flex items-center justify-between text-xs text-on-surface-variant">
+      <span id="dl-bytes"></span>
+      <span id="dl-speed"></span>
+    </div>
+    <div id="dl-msg" class="text-xs text-on-surface-variant"></div>
+  </div>
+
+</div>
+
+<script>
+const MODELS_API = '/betacaption/models';
+const NODES_API = `${MODELS_API}/nodes`;
+let pollTimer = null;
+let data = { options:[], settings:{}, models_dir:'', present:{} };
+
+// ─── Load state ───────────────────────────────────────────────────────────────
+async function loadData() {
+  try {
+    const r = await fetch(`${MODELS_API}/list`);
+    data = await r.json();
+    document.getElementById('hf-repo').value  = data.settings.repo || '';
+    document.getElementById('models-dir').textContent = data.models_dir || '';
+    renderOptions();
+  } catch(e) { console.error(e); }
+}
+
+function fmtBytes(b) {
+  if (!b) return '0 B';
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0; let n = b;
+  while (n >= 1024 && i < units.length-1) { n /= 1024; i++; }
+  return n.toFixed(1) + ' ' + units[i];
+}
+
+function renderOptions() {
+  const list = document.getElementById('options-list');
+  list.innerHTML = '';
+  for (const opt of (data.options||[])) {
+    const bothDone = opt.gguf_done && opt.mmproj_done;
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between p-3 rounded border border-outline-variant/20 bg-surface-container-lowest/40';
+    row.innerHTML = `
+      <div class="flex flex-col gap-0.5 min-w-0">
+        <div class="flex items-center gap-2">
+          <span style="font-family:Geist,sans-serif;font-weight:600;" class="text-on-surface">${opt.label}</span>
+          <span class="text-xs text-outline">(${opt.size})</span>
+          ${bothDone ? '<span class="px-2 py-0.5 rounded bg-status-active/20 border border-status-active/40 text-status-active text-[10px] font-semibold">DOWNLOADED</span>' : ''}
+        </div>
+        <div class="font-mono text-xs text-on-surface-variant truncate">${opt.gguf}</div>
+        <div class="font-mono text-xs text-on-surface-variant/60 truncate">+ ${opt.mmproj}</div>
+      </div>
+      <button data-key="${opt.key}" class="btn-download shrink-0 ml-3 ${bothDone ? 'sd-btn' : 'sd-btn sd-btn-primary'}">
+        ${bothDone ? 'Re-download' : 'Download'}
+      </button>`;
+    list.appendChild(row);
+  }
+
+  document.querySelectorAll('.btn-download').forEach(btn => {
+    btn.addEventListener('click', () => startDownload(btn.dataset.key));
+  });
+}
+
+// ─── Save settings ────────────────────────────────────────────────────────────
+document.getElementById('btn-save').addEventListener('click', async () => {
+  try {
+    const r = await fetch(`${MODELS_API}/save`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ repo: document.getElementById('hf-repo').value }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const msg = document.getElementById('save-msg');
+      msg.classList.remove('hidden');
+      setTimeout(() => msg.classList.add('hidden'), 2000);
+    }
+  } catch(e) { alert('Save failed: ' + e.message); }
+});
+
+const comfyuiBrowseModal = document.getElementById('comfyui-browse-modal');
+const comfyuiBrowsePath = document.getElementById('comfyui-browse-path');
+const comfyuiBrowseList = document.getElementById('comfyui-browse-list');
+const comfyuiBrowseRoots = document.getElementById('comfyui-browse-roots');
+const comfyuiBrowseFilter = document.getElementById('comfyui-browse-filter');
+const comfyuiBrowseCount = document.getElementById('comfyui-browse-count');
+const comfyuiBrowser = { cwd: '', parent: '', dirs: [], roots: [], active: 0 };
+const COMFYUI_ICONS = {
+  folder: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>',
+  up: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>',
+  choose: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>',
+};
+
+document.getElementById('btn-browse-comfyui').addEventListener('click', async () => {
+  comfyuiBrowseModal.classList.remove('hidden');
+  const inputPath = document.getElementById('comfyui-dir').value.trim();
+  await browseComfyuiFolders(inputPath || '/data/comfyui');
+  loadComfyuiRoots();
+});
+comfyuiBrowseModal.addEventListener('keydown', comfyuiBrowserKeydown);
+comfyuiBrowseFilter.addEventListener('input', () => {
+  comfyuiBrowser.active = 0;
+  renderComfyuiRows();
+});
+
+function comfyuiBrowserRows() {
+  const query = comfyuiBrowseFilter.value.trim().toLowerCase();
+  const rows = [{ kind: 'choose', name: `Use this folder · ${comfyuiBrowser.cwd || '/data'}`, icon: COMFYUI_ICONS.choose }];
+  if (comfyuiBrowser.parent && comfyuiBrowser.parent !== comfyuiBrowser.cwd) {
+    rows.push({ kind: 'up', name: 'Parent folder', path: comfyuiBrowser.parent, icon: COMFYUI_ICONS.up });
+  }
+  for (const dir of comfyuiBrowser.dirs) {
+    if (query && !dir.name.toLowerCase().includes(query)) continue;
+    rows.push({ kind: 'dir', name: dir.name, path: dir.path, icon: COMFYUI_ICONS.folder });
+  }
+  return rows;
+}
+
+async function loadComfyuiRoots() {
+  try {
+    const response = await fetch('/betacaption/api/browse-roots');
+    const result = await response.json();
+    comfyuiBrowser.roots = result.roots || [];
+    renderComfyuiRoots();
+  } catch (error) {
+    console.error('Could not load directory shortcuts:', error);
+  }
+}
+
+function renderComfyuiRoots() {
+  comfyuiBrowseRoots.replaceChildren();
+  for (const root of comfyuiBrowser.roots) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = root;
+    button.title = root;
+    button.className = 'max-w-full truncate px-2 py-0.5 rounded border border-outline-variant/30 text-[10px] font-mono text-outline hover:text-primary hover:border-badge-checkpoint';
+    button.addEventListener('click', () => browseComfyuiFolders(root));
+    comfyuiBrowseRoots.appendChild(button);
+  }
+}
+
+function renderComfyuiPath() {
+  comfyuiBrowsePath.replaceChildren();
+  const parts = comfyuiBrowser.cwd.split('/').filter(Boolean);
+  const root = document.createElement('button');
+  root.type = 'button';
+  root.className = `browse-crumb${parts.length ? '' : ' current'}`;
+  root.textContent = '/';
+  root.title = 'Root';
+  root.addEventListener('click', () => browseComfyuiFolders('/'));
+  comfyuiBrowsePath.appendChild(root);
+  let running = '';
+  parts.forEach((part) => {
+    running += `/${part}`;
+    const target = running;
+    const separator = document.createElement('span');
+    separator.className = 'browse-crumb-sep';
+    separator.textContent = '›';
+    separator.setAttribute('aria-hidden', 'true');
+    const crumb = document.createElement('button');
+    crumb.type = 'button';
+    crumb.className = `browse-crumb${target === comfyuiBrowser.cwd ? ' current' : ''}`;
+    crumb.textContent = part;
+    crumb.addEventListener('click', () => browseComfyuiFolders(target));
+    comfyuiBrowsePath.append(separator, crumb);
+  });
+  comfyuiBrowsePath.scrollLeft = comfyuiBrowsePath.scrollWidth;
+}
+
+function renderComfyuiRows() {
+  const rows = comfyuiBrowserRows();
+  if (comfyuiBrowser.active >= rows.length) comfyuiBrowser.active = 0;
+  comfyuiBrowseList.replaceChildren();
+  rows.forEach((row, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `browse-row ${row.kind}${index === comfyuiBrowser.active ? ' active' : ''}`;
+    button.innerHTML = row.icon;
+    button.append(document.createTextNode(row.name));
+    button.addEventListener('click', () => activateComfyuiRow(row));
+    comfyuiBrowseList.appendChild(button);
+  });
+  const folders = rows.filter((row) => row.kind === 'dir').length;
+  comfyuiBrowseCount.textContent = `${folders} folder${folders === 1 ? '' : 's'}`;
+  const active = comfyuiBrowseList.querySelector('.browse-row.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+
+function activateComfyuiRow(row) {
+  if (row.kind === 'choose') { selectComfyuiFolder(); return; }
+  browseComfyuiFolders(row.path);
+}
+
+function comfyuiBrowserKeydown(event) {
+  if (event.key === 'Escape') { closeComfyuiBrowser(); return; }
+  const rows = comfyuiBrowserRows();
+  if (!rows.length) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    comfyuiBrowser.active = (comfyuiBrowser.active + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+    renderComfyuiRows();
+  } else if (event.key === 'Enter') {
+    // A focused row fires its own click on Enter; only the filter box (and the
+    // dialog itself) needs row activation here.
+    if (event.target instanceof Element && event.target.closest('.browse-row')) return;
+    const row = rows[comfyuiBrowser.active];
+    if (!row) return;
+    event.preventDefault();
+    activateComfyuiRow(row);
+  }
+}
+
+async function browseComfyuiFolders(path) {
+  try {
+    const response = await fetch(`/betacaption/api/browse-folders?path=${encodeURIComponent(path)}`);
+    const result = await response.json();
+    if (!response.ok || result.error) throw new Error(result.error || `Request failed (${response.status})`);
+    comfyuiBrowser.cwd = result.cwd;
+    comfyuiBrowser.parent = result.parent || '';
+    comfyuiBrowser.dirs = result.dirs || [];
+    comfyuiBrowser.active = 0;
+    comfyuiBrowseFilter.value = '';
+    renderComfyuiPath();
+    renderComfyuiRows();
+    comfyuiBrowseFilter.focus();
+  } catch (error) {
+    comfyuiBrowsePath.replaceChildren();
+    comfyuiBrowseList.textContent = error.message;
+  }
+}
+
+function selectComfyuiFolder() {
+  document.getElementById('comfyui-dir').value = comfyuiBrowser.cwd;
+  closeComfyuiBrowser();
+}
+
+function closeComfyuiBrowser() {
+  comfyuiBrowseModal.classList.add('hidden');
+}
+
+document.getElementById('comfyui-browse-close').addEventListener('click', closeComfyuiBrowser);
+document.getElementById('comfyui-browse-cancel').addEventListener('click', closeComfyuiBrowser);
+document.getElementById('comfyui-browse-select').addEventListener('click', selectComfyuiFolder);
+
+async function loadNodeConfig() {
+  const status = document.getElementById('nodes-status');
+  try {
+    const response = await fetch(NODES_API);
+    const config = await response.json();
+    if (!response.ok || !config.ok) throw new Error(config.error || `Request failed (${response.status})`);
+    document.getElementById('comfyui-dir').value = config.install_dir || '';
+    document.getElementById('btn-install-nodes').disabled = !config.valid;
+    document.getElementById('nodes-location').textContent = config.installed
+      ? `Node pack installed in ${config.custom_nodes_dir}`
+      : (config.valid ? `Ready to install into ${config.custom_nodes_dir}` : (config.install_dir ? 'The saved directory is unavailable or invalid.' : 'No ComfyUI directory configured.'));
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = 'text-xs text-status-alert';
+    document.getElementById('btn-install-nodes').disabled = true;
+  }
+}
+
+document.getElementById('btn-set-comfyui-dir').addEventListener('click', async () => {
+  const status = document.getElementById('nodes-status');
+  status.textContent = 'Validating directory…';
+  status.className = 'text-xs text-on-surface-variant';
+  try {
+    const response = await fetch(`${NODES_API}/directory`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({install_dir: document.getElementById('comfyui-dir').value}),
+    });
+    const config = await response.json();
+    if (!response.ok || !config.ok) throw new Error(config.error || `Request failed (${response.status})`);
+    status.textContent = 'Directory saved.';
+    status.className = 'text-xs text-status-active';
+    await loadNodeConfig();
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = 'text-xs text-status-alert';
+  }
+});
+
+document.getElementById('btn-install-nodes').addEventListener('click', async () => {
+  const button = document.getElementById('btn-install-nodes');
+  const status = document.getElementById('nodes-status');
+  button.disabled = true;
+  status.textContent = 'Installing nodes…';
+  status.className = 'text-xs text-on-surface-variant';
+  try {
+    const response = await fetch(`${NODES_API}/install`, {method: 'POST'});
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `Request failed (${response.status})`);
+    status.textContent = result.message;
+    status.className = 'text-xs text-status-active';
+    await loadNodeConfig();
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = 'text-xs text-status-alert';
+    button.disabled = false;
+  }
+});
+
+// ─── Start download ───────────────────────────────────────────────────────────
+async function startDownload(optionKey) {
+  try {
+    const r = await fetch(`${MODELS_API}/download`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        option:   optionKey,
+        repo:     document.getElementById('hf-repo').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert('Could not start: ' + d.message); return; }
+    document.getElementById('dl-progress').classList.remove('hidden');
+    startPolling();
+  } catch(e) { alert('Download error: ' + e.message); }
+}
+
+// ─── Stop ─────────────────────────────────────────────────────────────────────
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  await fetch(`${MODELS_API}/stop`, { method:'POST' });
+});
+
+// ─── Poll job status ──────────────────────────────────────────────────────────
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(pollStatus, 800);
+}
+
+function stopPolling() {
+  clearInterval(pollTimer); pollTimer = null;
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch(`${MODELS_API}/status`);
+    const s = await r.json();
+    updateProgress(s);
+    if (['done','error','cancelled','idle'].includes(s.state)) {
+      stopPolling();
+      if (s.state === 'done') { await loadData(); }   // refresh badges
+    }
+  } catch(e) {}
+}
+
+function updateProgress(s) {
+  const wrap  = document.getElementById('dl-progress');
+  const bar   = document.getElementById('dl-bar');
+  const file  = document.getElementById('dl-file');
+  const bytes = document.getElementById('dl-bytes');
+  const speed = document.getElementById('dl-speed');
+  const msg   = document.getElementById('dl-msg');
+
+  if (s.state === 'idle') { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+
+  file.textContent = s.file || '';
+  msg.textContent  = s.message || '';
+
+  if (s.total_bytes > 0) {
+    const pct = Math.min(100, (s.done_bytes / s.total_bytes) * 100);
+    bar.style.width = pct.toFixed(1) + '%';
+    bytes.textContent = `${fmtBytes(s.done_bytes)} / ${fmtBytes(s.total_bytes)}`;
+  } else {
+    bar.style.width = s.state === 'done' ? '100%' : '0%';
+    bytes.textContent = fmtBytes(s.done_bytes);
+  }
+
+  speed.textContent = s.speed > 0 ? `${fmtBytes(s.speed)}/s` : '';
+
+  if (s.state === 'done') {
+    bar.style.width = '100%';
+    msg.textContent = '✓ All files downloaded';
+  } else if (s.state === 'error') {
+    bar.classList.add('bg-status-alert/60');
+  } else if (s.state === 'cancelled') {
+    msg.textContent = 'Cancelled';
+  }
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+loadData();
+loadNodeConfig();
+
+// Check if a download is already in progress
+(async () => {
+  try {
+    const r = await fetch(`${MODELS_API}/status`);
+    const s = await r.json();
+    if (s.state === 'downloading') {
+      document.getElementById('dl-progress').classList.remove('hidden');
+      updateProgress(s);
+      startPolling();
+    }
+  } catch(e) {}
+})();
+</script>
+</body>
+</html>
