@@ -81,6 +81,7 @@ _batch = {
     "job_id": 0, "state": "idle", "folder_path": "", "current": 0,
     "total": 0, "file": "", "event_id": 0, "events": [], "cancel": False,
     "pause": False,
+    "pause": False,
 }
 
 
@@ -108,6 +109,14 @@ def _run_caption_batch(job_id, image_files, folder_path, prompt, url, model, mod
             with _batch_lock:
                 if job_id != _batch["job_id"] or _batch["cancel"]:
                     break
+            # A paused batch waits here until it is resumed or stopped.
+            while True:
+                with _batch_lock:
+                    if job_id != _batch["job_id"] or _batch["cancel"]:
+                        break
+                    if not _batch["pause"]:
+                        break
+                time.sleep(0.25)
             # A paused batch waits here until it is resumed or stopped.
             while True:
                 with _batch_lock:
@@ -321,6 +330,22 @@ def _build_caption_with_sd(caption, image_path):
 # Routes
 # ---------------------------------------------------------------------------
 
+def get_caption_root():
+    """The folder this channel captions, set by the environment.
+
+    The studio no longer has a folder bar: the media root is the source of
+    truth and it comes from the plugin's own environment variable, so the
+    beta and the stable plugin can point at different folders.
+    """
+    raw = (
+        os.environ.get("BETA_CAPTION_ROOT")
+        or os.environ.get("CAPTION_ROOT")
+        or os.environ.get("GALLERY_ROOT")
+        or "/data/downloads"
+    )
+    return os.path.abspath(os.path.expanduser(str(raw).strip().strip("\"'")))
+
+
 @caption_bp.post("/check-connection")
 def check_connection():
     """Probe the LM Studio / vision-model server."""
@@ -350,7 +375,7 @@ def get_file():
     /images JSON: 40 files per page meant tens of megabytes per request and
     pinned server threads. Browsers cache and lazily load plain URLs instead.
     """
-    folder_path = (request.args.get("folderPath") or "").strip("\"'")
+    folder_path = (request.args.get("folderPath") or "").strip("\"'") or get_caption_root()
     name = os.path.basename((request.args.get("file") or "").strip("\"'"))
     if not folder_path or not name or os.path.splitext(name)[1].lower() not in IMAGE_EXTENSIONS:
         return jsonify({"error": "folderPath and a valid image file are required"}), 400
@@ -369,7 +394,7 @@ def get_file():
 @caption_bp.get("/images")
 def get_images():
     """List images in a folder with captions + SD metadata (paginated)."""
-    folder_path = (request.args.get("folderPath") or "").strip("\"'")
+    folder_path = (request.args.get("folderPath") or "").strip("\"'") or get_caption_root()
     page  = max(1, int(request.args.get("page",  1)))
     limit = max(1, int(request.args.get("limit", 20)))
 
@@ -431,6 +456,8 @@ def get_images():
         "page": page,
         "totalPages": total_pages,
         "limit": limit,
+        # The folder the studio is working in — it comes from the environment.
+        "folderPath": folder_path,
     })
 
 
@@ -438,7 +465,7 @@ def get_images():
 def save_caption():
     """Write a caption sidecar beside an image in the selected folder."""
     data = request.get_json(silent=True) or {}
-    folder = (data.get("folderPath") or "").strip().strip("\"'")
+    folder = (data.get("folderPath") or "").strip().strip("\"'") or get_caption_root()
     filename = os.path.basename(data.get("fileName") or "")
     if not folder or not filename or os.path.splitext(filename)[1].lower() not in IMAGE_EXTENSIONS:
         return jsonify({"ok": False, "error": "A valid image folder and filename are required"}), 400
@@ -460,7 +487,7 @@ def save_caption():
 def caption_single():
     """Caption one image and write a .txt sidecar."""
     data = request.get_json(silent=True) or {}
-    folder_path = (data.get("folderPath") or "").strip("\"'")
+    folder_path = (data.get("folderPath") or "").strip("\"'") or get_caption_root()
     file_name   = data.get("fileName", "")
     prompt      = data.get("prompt", "Caption this image")
     url         = _reachable_url(data.get("lmStudioUrl", "http://localhost:1234/v1"))
@@ -527,7 +554,7 @@ def caption_single():
 
 def _start_caption_batch(data):
     """Validate and launch a background batch, returning its id and count."""
-    folder_path = (data.get("folderPath") or "").strip("\"'")
+    folder_path = (data.get("folderPath") or "").strip("\"'") or get_caption_root()
     prompt = data.get("prompt", "Caption this image")
     url = _reachable_url(data.get("lmStudioUrl", "http://localhost:1234/v1"))
     model = data.get("model", "model-identifier")
@@ -641,6 +668,21 @@ def caption_task():
 def pause_caption_batch():
     """Pause or resume a running batch (the task float's pause button)."""
     with _batch_lock:
+        if _batch["state"] not in ("running", "cancelling", "paused"):
+            return jsonify({"ok": True, "state": _batch["state"], "paused": False})
+        if _batch["pause"]:
+            _batch["pause"] = False
+            _batch["state"] = "running"
+            return jsonify({"ok": True, "state": "running", "paused": False})
+        _batch["pause"] = True
+        _batch["state"] = "paused"
+        return jsonify({"ok": True, "state": "paused", "paused": True})
+
+
+@caption_bp.post("/batch/pause")
+def pause_caption_batch():
+    """Pause or resume a running batch (the task float's pause button)."""
+    with _batch_lock:
         if _batch["state"] not in ("running", "cancelling"):
             return jsonify({"ok": True, "state": _batch["state"], "paused": False})
         if _batch["pause"]:
@@ -666,7 +708,7 @@ def stop_caption_batch():
 @caption_bp.get("/workflow")
 def download_workflow():
     """Download the embedded ComfyUI workflow JSON from an image."""
-    folder_path = (request.args.get("folderPath") or "").strip("\"'")
+    folder_path = (request.args.get("folderPath") or "").strip("\"'") or get_caption_root()
     file_name   = request.args.get("file", "")
 
     if not folder_path or not file_name:
@@ -697,7 +739,7 @@ def download_workflow():
 def browse_folders():
     """Web-based directory browser (works in Docker/headless)."""
     req_path = os.path.abspath(
-        os.path.expanduser((request.args.get("path") or "/data").strip("\"'"))
+        os.path.expanduser((request.args.get("path") or get_caption_root()).strip("\"'"))
     )
     if not os.path.exists(req_path):
         return jsonify({"error": f"Folder does not exist: {req_path}"}), 400
@@ -734,6 +776,7 @@ def browse_folders():
 def browse_roots():
     """Quick-pick roots for the folder browser."""
     candidates = [
+        get_caption_root(),
         "/data", "/data/downloads", "/data/tasks", os.path.expanduser("~"), "/app", "/",
     ]
     seen = []
@@ -744,14 +787,14 @@ def browse_roots():
                 seen.append(ap)
         except Exception:
             continue
-    return jsonify({"roots": seen, "isDocker": _in_docker()})
+    return jsonify({"roots": seen, "isDocker": _in_docker(), "root": get_caption_root()})
 
 
 @caption_bp.get("/folders")
 def list_folders():
     """Live on-disk folder listing with media counts (Gallery-style explorer)."""
     req_path = os.path.abspath(
-        os.path.expanduser((request.args.get("path") or "/data").strip("\"'"))
+        os.path.expanduser((request.args.get("path") or get_caption_root()).strip("\"'"))
     )
     if not os.path.exists(req_path):
         return jsonify({"error": f"Folder does not exist: {req_path}"}), 400

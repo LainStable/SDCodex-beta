@@ -1,7 +1,7 @@
 {
   "id": "betacaption",
   "name": "Beta Caption",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Beta ComfyCaption with the Gallery browser built in (grid, folders and viewer). Uses the same media root as Gallery.",
   "author": "DeeplabSystems",
   "repository": "https://github.com/LainStable/SDCodex-beta",
@@ -45,6 +45,12 @@
       "host_path": "./caption_models",
       "container_path": "/data/caption_models",
       "description": "Directory for captioning models (GGUF + mmproj). Point this at your LM Studio models folder to reuse existing GGUFs \u2014 files downloaded from the Caption Models page land here too"
+    },
+    {
+      "env_var": "BETA_CAPTION_ROOT",
+      "host_path": "./downloads",
+      "container_path": "/data/downloads",
+      "description": "Media root this channel captions. The studio reads it from here \u2014 there is no folder bar."
     }
   ],
   "icon": "subtitles",
