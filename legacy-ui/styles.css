@@ -23,7 +23,6 @@
 .scan-loading { display:flex; align-items:center; gap:10px; padding:12px 20px; color:#94a3b8; font-size:13px; flex-shrink:0; }
 .scan-progress-track { flex:1 1 120px; max-width:220px; height:4px; border-radius:2px; background:rgba(255,255,255,.12); overflow:hidden; }
 .scan-progress-fill { height:100%; width:0%; background:#3b82f6; border-radius:2px; transition:width .3s ease; }
-@keyframes scan-progress-slide { 0% { margin-left:-40%; } 100% { margin-left:100%; } }
 .loading-spinner { display:inline-block; flex:0 0 16px; width:16px; height:16px; border:2px solid #475569; border-top-color:#93c5fd; border-radius:50%; animation:loading-spin 1s linear infinite; }
 @keyframes loading-spin { to { transform:rotate(360deg); } }
 .thumb-loading::after { content:''; position:absolute; inset:0; background:linear-gradient(110deg,#111827 20%,#263449 45%,#111827 70%); background-size:200% 100%; animation:thumbnail-shimmer 1.8s ease-in-out infinite; pointer-events:none; z-index:2; }
@@ -1606,8 +1605,8 @@ dialog,
     left: calc(50% - var(--gallery-info-w, 360px) / 2);
 }
 
-/* Warnings / convert dialogs must sit above the floating viewer card. */
-#gallery-wrapper.viewer-open #warning-overlay,
+/* Warning dialog must sit above the floating viewer card. */
+#gallery-wrapper.viewer-open #warning-overlay { z-index: 2100; }
 
 /* On narrow screens the info rail shrinks so the media still gets most of the card. */
 @media (max-width: 700px) {

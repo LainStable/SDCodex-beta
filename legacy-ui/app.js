@@ -1899,13 +1899,12 @@ async function loadGallery({ preserveView = true, forceCacheClear = false, silen
         }
         const sorted = await sortMediaFiles(result.files, sortMode, forceCacheClear, session.signal);
         if (!current()) return;
-        const displayFiles = sorted;
         // Capture live viewer identity after awaits: the user may have advanced meanwhile.
         const viewed = mediaFiles[currentIndex];
         const wasGrid = isGridViewActive;
-        const changed = JSON.stringify(displayFiles) !== JSON.stringify(mediaFiles) ||
+        const changed = JSON.stringify(sorted) !== JSON.stringify(mediaFiles) ||
             JSON.stringify(listing.folderNames) !== JSON.stringify(subfolders);
-        mediaFiles = displayFiles; subfolders = listing.folderNames;
+        mediaFiles = sorted; subfolders = listing.folderNames;
         const retained = viewed && mediaFiles.includes(viewed);
         currentIndex = retained ? mediaFiles.indexOf(viewed) : Math.min(currentIndex, Math.max(0, mediaFiles.length - 1));
         if (forceCacheClear) clearImageBlobCache();
