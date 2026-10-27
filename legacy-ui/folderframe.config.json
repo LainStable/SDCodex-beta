@@ -1,0 +1,36 @@
+{
+  "sources": [
+    {
+      "id": "photos",
+      "label": "Photos",
+      "path": "photos/",
+      "discoveryMode": "auto"
+    }
+  ],
+  "defaults": {
+    "source": "photos",
+    "album": "",
+    "view": "folders",
+    "sort": "filename",
+    "interval": 5,
+    "imageMode": "fit",
+    "shuffle": false,
+    "autoRefresh": true,
+    "tvMode": false,
+    "autoplay": false,
+    "controls": true,
+    "showFilenames": true,
+    "showDownloadButton": true,
+    "showCopyButton": true,
+    "showButtonLabels": false,
+    "rememberPreferences": true,
+    "gridDensity": "comfortable"
+  },
+  "index": {
+    "refreshInterval": 120
+  },
+  "embed": {
+    "refreshInterval": 300,
+    "rememberPreferences": false
+  }
+}

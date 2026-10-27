@@ -1,0 +1,3 @@
+Pillow>=10.0.0
+piexif>=1.1.3
+sd-prompt-reader>=0.1.0; python_version<'3.14'
