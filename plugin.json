@@ -1,0 +1,36 @@
+{
+  "id": "betarenamer",
+  "name": "Beta Renamer",
+  "version": "0.1.3",
+  "description": "Beta AI Renamer with the Gallery browser built in (grid, folders and viewer). Uses the same media root as Gallery.",
+  "author": "LainStable",
+  "repository": "https://github.com/LainStable/SDCodex-beta",
+  "icon": "drive_file_rename_outline",
+  "entry_page": "renamer",
+  "nav_items": [
+    {
+      "label": "Renamer",
+      "page": "renamer"
+    },
+    {
+      "label": "Gallery",
+      "page": "browser"
+    }
+  ],
+  "settings": [],
+  "task_status": {
+    "label": "AI Renamer",
+    "path": "/betarenamer/api/task",
+    "page": "renamer"
+  },
+  "entrypoint": "plugin:init_plugin",
+  "assistant_actions": [
+    {
+      "name": "active_job",
+      "description": "The current or last dry-run analysis job for the renamer, with progress and folder.",
+      "method": "GET",
+      "path": "/betarenamer/api/jobs/active"
+    }
+  ],
+  "branch": "renamer"
+}

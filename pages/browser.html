@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#050505">
+    <title>FolderFrame</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rhodium+Libre&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/betarenamer/gallery/api/legacy-ui/styles.css?v=20261018-immich">
+</head>
+<body>
+    <div id="gallery-wrapper">
+        <div id="viewer-backdrop" aria-hidden="true"></div>
+        <div id="viewer-modal">
+        <div id="media-viewport">
+            <div id="media-container">
+                <img id="gallery-image" alt="Gallery Image" draggable="false" style="display:none;">
+                <video id="gallery-video" style="display:none;" playsinline></video>
+            </div>
+
+            <div id="media-loading" class="loading-note" role="status" hidden><span class="loading-spinner" aria-hidden="true"></span><span id="media-loading-text"></span></div>
+            <div id="video-error-overlay" class="video-error-overlay" style="display:none;">
+                <div class="video-error-card">
+                    <div role="status" aria-live="polite" aria-atomic="true">
+                        <h3 id="media-error-title">Unable to open media</h3>
+                        <p id="media-error-filename"></p>
+                        <p id="video-error-text"></p>
+                        <p id="video-error-ffmpeg"></p>
+                        <p id="media-error-status"></p>
+                    </div>
+                    <div class="media-error-actions">
+                        <button id="btn-retry-media-error" class="btn btn-primary" type="button">Retry</button>
+                        <button id="btn-next-media-error" class="btn btn-secondary" type="button">Next file</button>
+                        <button id="btn-close-video-error" class="btn btn-secondary" type="button">Gallery</button>
+                        <a id="media-error-original" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">Open original</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <header id="overlay-header" class="overlay ff-header">
+            <div class="header-left ff-header-left ff-pill">
+                <button id="btn-show-grid" class="btn btn-secondary ff-btn ff-btn-icon ff-btn-home" title="Back to grid" aria-label="Back to grid">
+                    <span class="viewer-back-logo" aria-hidden="true">▦</span>
+                </button>
+                <div class="viewer-file-meta">
+                    <span id="media-title" class="title-text">Loading…</span>
+                    <span id="media-index" class="index-text"></span>
+                </div>
+            </div>
+
+            <div class="header-right ff-header-right ff-pill">
+                <button id="btn-play-pause" class="btn btn-secondary ff-btn ff-btn-icon" title="Play/Pause slideshow" aria-label="Play/Pause slideshow">
+                    <span class="play-icon"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 5v14l11-7z"/></svg></span>
+                    <span class="pause-icon" style="display:none;"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></span>
+                    <span id="slideshow-text" class="button-label">Play</span>
+                </button>
+
+                <button id="btn-image-mode" class="btn btn-secondary ff-btn ff-btn-icon" title="Toggle Original Size / Fit Screen" aria-label="Image sizing: Fit" aria-pressed="false">
+                    <span class="fit-mode-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 9h8v6H8z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>
+                    <span class="original-mode-icon" hidden><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/><rect x="8" y="8" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>
+                    <span id="image-mode-text" class="button-label">Fit</span>
+                </button>
+
+                <button id="btn-rotate" class="btn btn-secondary ff-btn ff-btn-icon" title="Rotate photo 90° clockwise" aria-label="Rotate photo clockwise" disabled>
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15.55 5.55A7 7 0 1 0 19 12h-2a5 5 0 1 1-2.87-4.52L11 10.6V3h7.6l-3.05 2.55z"/></svg>
+                    <span class="button-label">Rotate</span>
+                </button>
+
+                <button id="btn-viewer-star" class="btn btn-secondary ff-btn ff-btn-icon" title="Star this media" aria-label="Star this media" aria-pressed="false">
+                    <span class="star-off-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span>
+                    <span class="star-on-icon" hidden><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></span>
+                    <span class="button-label">Star</span>
+                </button>
+
+                <button id="btn-optimize" class="btn btn-secondary ff-btn ff-btn-icon" title="Optimize this image" aria-label="Optimize this image" disabled>
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 3v3H3v2h7V3H8zm8 0v3h5v2h-7V3h2zM3 16h5v3h2v-7H3v4zm16 0h-5v3h-2v-7h7v4z"/></svg>
+                    <span class="button-label">Optimize</span>
+                </button>
+
+                <button id="btn-convert" class="btn btn-secondary ff-btn ff-btn-icon" title="Convert this image to another type" aria-label="Convert this image" disabled>
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6.99 11 3 15l3.99 4v-3H13v-2H6.99v-3zM21 9l-3.99-4v3H11v2h6.01v3L21 9z"/></svg>
+                    <span class="button-label">Convert</span>
+                </button>
+
+                <button id="btn-info" class="btn btn-secondary ff-btn ff-btn-icon" title="Show caption, SD prompt and generation info for this image" aria-label="Toggle image details" aria-pressed="false">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 6h4v2H4v4zm10 0h2v4h2v4H2v2zm2-10V14H1zm13 0h1v14H1v-14zM7 9h2v2H2v2z"/></svg>
+                    <span class="button-label">Info</span>
+                </button>
+
+                <div id="viewer-options" class="viewer-options">
+                    <button id="btn-viewer-options" class="btn btn-secondary ff-btn ff-btn-icon" type="button" aria-label="Viewer options" aria-haspopup="true" aria-expanded="false" title="Viewer options">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>
+                    </button>
+                    <div id="viewer-options-menu" class="viewer-options-menu" role="menu" hidden>
+                        <button id="btn-shuffle" class="btn btn-secondary ff-btn" type="button" role="menuitem" aria-pressed="false" title="Shuffle slideshow order" aria-label="Shuffle slideshow order">
+                            <span class="shuffle-on-icon" hidden><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></span>
+                            <span class="shuffle-off-icon"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 5h11V2l5 4-5 4V7H4V5zm0 12h11v-3l5 4-5 4v-3H4v-2z"/></svg></span>
+                            <span class="button-label">Shuffle Off</span>
+                        </button>
+                        <button id="btn-reset-zoom" class="btn btn-secondary ff-btn" type="button" role="menuitem" title="Reset zoom and pan" aria-label="Reset zoom and pan" disabled>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg>
+                            <span class="button-label">Reset Zoom</span>
+                        </button>
+                        <button id="btn-fullscreen" class="btn btn-secondary ff-btn" type="button" role="menuitem" title="Enter fullscreen" aria-label="Toggle Fullscreen" aria-pressed="false">
+                            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                            <span class="button-label">Full</span>
+                        </button>
+                        <button id="btn-tv-mode" class="btn btn-secondary ff-btn" type="button" role="menuitem" aria-pressed="false" title="Start photo-frame mode" aria-label="Start photo-frame mode">
+                            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H7v2h10v-2h-3v-2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg>
+                            <span class="button-label">TV Mode</span>
+                        </button>
+                        <div class="timer-control">
+                            <label for="select-interval">Interval</label>
+                            <select id="select-interval" class="custom-select">
+                                <option value="3">3s</option>
+                                <option value="5">5s</option>
+                                <option value="10">10s</option>
+                                <option value="15">15s</option>
+                                <option value="30">30s</option>
+                                <option value="60">60s</option>
+                                <option value="300">5m</option>
+                                <option value="900">15m</option>
+                                <option value="3600">60m</option>
+                            </select>
+                        </div>
+                        <a id="btn-download" class="btn btn-secondary ff-btn" download rel="noopener" role="menuitem" title="Download original media">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3zM5 19h14v2H5v-2z"/></svg>
+                            <span class="button-label">Download</span>
+                        </a>
+                        <button id="btn-download-workflow" class="btn btn-secondary ff-btn" type="button" role="menuitem" title="Download the ComfyUI workflow embedded in this image" hidden>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6H16v2H4V8zm0 8h12v2H3v-2zm0 10h16v2H4v-2zM18 12h-2v4H2v-4z"/></svg>
+                            <span class="button-label">Download Workflow</span>
+                        </button>
+                        <button id="btn-copy-link" class="btn btn-secondary ff-btn" type="button" role="menuitem" title="Copy displayed image" disabled>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                            <span class="button-label">Copy Image</span>
+                        </button>
+                        <button id="btn-copy-filename" class="btn btn-secondary ff-btn" type="button" role="menuitem" title="Copy filename" aria-label="Copy filename" disabled>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h8v2H8v-2zm0 4h8v2H8v-2z"/></svg>
+                            <span class="button-label">Copy Filename</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <button id="nav-left" class="nav-arrow" aria-label="Previous media"><svg viewBox="0 0 24 24" width="36" height="36"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>
+        <button id="nav-right" class="nav-arrow" aria-label="Next media"><svg viewBox="0 0 24 24" width="36" height="36"><path fill="currentColor" d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>
+
+        <div id="progress-container"><div id="progress-bar"></div></div>
+        </div>
+
+        <div id="grid-view-container">
+            <aside id="source-rail" class="source-rail" aria-label="Gallery sources" hidden>
+                <p class="source-rail-title">Sources</p>
+                <div id="source-rail-list"></div>
+            </aside>
+            <header id="grid-header" class="overlay ff-header header-nav-container">
+                <div class="grid-header-main header-nav ff-header-left ff-pill">
+                    <button id="btn-gallery-home" class="brand-home" type="button" aria-label="Gallery root" title="Gallery root">
+                        <span id="source-root-label" class="source-root-label">Photos</span>
+                    </button>
+                    <span id="breadcrumb-root-separator" class="crumb-separator path-root-separator" aria-hidden="true" hidden>›</span>
+                    <div id="gallery-path-bar" class="gallery-path-bar" aria-label="Current gallery location">
+                        <div id="breadcrumb" class="breadcrumb" aria-label="Album path"></div>
+                        <span id="current-path-separator" class="crumb-separator" aria-hidden="true" hidden>›</span>
+                        <span id="grid-path" class="folder-path">Sorted by folder</span>
+                    </div>
+                </div>
+                <div class="header-right grid-actions ff-header-right ff-pill">
+                    <span id="grid-view-mode-slot" class="grid-action-slot">
+                        <button id="btn-view-mode" class="btn btn-secondary ff-btn" aria-pressed="false" title="Show all media in this folder and all subfolders">
+                            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 5h8v6H3V5zm10 0h8v6h-8V5zM3 13h8v6H3v-6zm10 0h8v6h-8v-6z"/></svg>
+                            <span class="button-label">By Folder</span>
+                        </button>
+                    </span>
+                    <span id="grid-sort-slot" class="grid-action-slot">
+                        <button id="btn-sort" class="btn btn-secondary ff-btn" title="Change sorting">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 5h18v2H3V5zm0 6h12v2H3v-2zm0 6h6v2H3v-2z"/></svg>
+                            <span id="sort-label">Filename</span>
+                        </button>
+                    </span>
+                    <span id="grid-density-slot" class="grid-density-slot">
+                        <button id="btn-grid-density" class="btn btn-secondary ff-btn" title="Change thumbnail size">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z"/></svg>
+                            <span id="grid-density-label">Comfortable</span>
+                        </button>
+                    </span>
+                    <span id="grid-stars-slot" class="grid-action-slot">
+                        <button id="btn-stars" class="btn btn-secondary ff-btn" aria-pressed="false" title="Show only starred media">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                            <span class="button-label">Starred</span>
+                        </button>
+                    </span>
+                    <span id="grid-optimize-slot" class="grid-action-slot">
+                        <button id="btn-optimize-folder" class="btn btn-secondary ff-btn" title="Optimize all images in this folder" disabled>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 3v3H3v2h7V3H8zm8 0v3h5v2h-7V3h2zM3 16h5v3h2v-7H3v4zm16 0h-5v3h-2v-7h7v4z"/></svg>
+                            <span class="button-label">Optimize</span>
+                        </button>
+                    </span>
+                    <span id="grid-convert-slot" class="grid-action-slot">
+                        <button id="btn-convert-folder" class="btn btn-secondary ff-btn" title="Convert images in this folder to another type" disabled>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6.99 11 3 15l3.99 4v-3H13v-2H6.99v-3zM21 9l-3.99-4v3H11v2h6.01v3L21 9z"/></svg>
+                            <span class="button-label">Convert</span>
+                        </button>
+                    </span>
+                    <div id="grid-options" class="viewer-options grid-options">
+                        <button id="btn-grid-options" class="btn btn-secondary ff-btn ff-btn-icon" type="button" aria-label="Gallery options" aria-haspopup="true" aria-expanded="false" title="Gallery options">
+                            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>
+                        </button>
+                        <div id="grid-options-menu" class="viewer-options-menu grid-options-menu" role="menu" hidden>
+                            <span id="grid-view-mode-menu-slot" class="grid-menu-slot"></span>
+                            <span id="grid-sort-menu-slot" class="grid-menu-slot"></span>
+                            <span id="grid-density-menu-slot" class="grid-density-menu-slot"></span>
+                            <span id="grid-stars-menu-slot" class="grid-menu-slot"></span>
+                            <span id="grid-optimize-menu-slot" class="grid-menu-slot"></span>
+                            <span id="grid-convert-menu-slot" class="grid-menu-slot"></span>
+                            <span id="grid-refresh-menu-slot" class="grid-menu-slot">
+                                <button id="btn-refresh-grid" class="btn btn-secondary ff-btn" type="button" role="menuitem" title="Rescan current album now" aria-label="Refresh Folder">
+                                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.07 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                                    <span id="refresh-grid-label" class="button-label">Refresh Folder</span>
+                                </button>
+                            </span>
+                            <button id="btn-auto-refresh" class="btn btn-secondary ff-btn" type="button" role="menuitem" aria-pressed="true" title="Automatically rescan every 60 seconds">
+                                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 6V3l-4 4 4 4V8c2.76 0 5 2.24 5 5 0 .75-.17 1.46-.46 2.1l1.46 1.46A6.96 6.96 0 0 0 19 13c0-3.87-3.13-7-7-7zm-5.54.9L5 5.44A6.96 6.96 0 0 0 4 9c0 3.87 3.13 7 7 7v3l4-4-4-4v3c-2.76 0-5-2.24-5-5 0-.75.17-1.46.46-2.1z"/></svg>
+                                <span class="button-label">Auto Refresh On</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+            <div class="grid-status-stack" role="status">
+                <span id="grid-count" class="index-text">0 Files</span>
+                <span class="grid-status-separator" aria-hidden="true">·</span>
+                <span id="scan-status" class="scan-status">Ready</span>
+            </div>
+            <div id="scan-failures" role="status" hidden><span id="scan-failure-text"></span> <button id="btn-retry-scan" class="btn btn-secondary" type="button">Retry scan</button></div>
+            <div id="scan-loading" class="scan-loading" role="status" hidden><span class="loading-spinner" aria-hidden="true"></span><span id="scan-loading-text">Scanning folders…</span><div id="scan-progress-track" class="scan-progress-track" role="progressbar" aria-label="Folder scan progress" aria-valuemin="0" aria-valuemax="100" hidden><div id="scan-progress-fill" class="scan-progress-fill"></div></div></div>
+            <div id="thumbnail-grid"></div>
+            <button id="btn-back-to-top" class="btn btn-secondary back-to-top" type="button" hidden aria-label="Back to top">↑ Top</button>
+        </div>
+
+        <div id="help-hint"><span>Scroll to Zoom • Drag to Pan • ←/→ Browse • Space Play/Pause • Enter Fit/Original • R Rotate • F Fullscreen • G Gallery • S Shuffle</span></div>
+
+        <div id="convert-overlay" class="warning-container" style="display:none;">
+            <div class="warning-card">
+                <h2 id="convert-title">Convert Image</h2>
+                <p id="convert-message">Choose the new image type. Only files directly in this folder are converted; subfolders are left alone, and files that already are the chosen type are skipped.</p>
+                <div class="convert-option-row">
+                    <label class="convert-format-label" for="convert-format">Convert to</label>
+                    <select id="convert-format" class="custom-select">
+                        <option value="jpg">JPEG - .jpg</option>
+                        <option value="png">PNG - .png</option>
+                        <option value="webp">WebP - .webp</option>
+                        <option value="gif">GIF - .gif</option>
+                        <option value="tiff">TIFF - .tiff</option>
+                        <option value="bmp">BMP - .bmp</option>
+                    </select>
+                </div>
+                <div class="convert-check-row">
+                    <input type="checkbox" id="convert-delete-original" class="convert-delete-checkbox">
+                    <label for="convert-delete-original">Delete original</label>
+                </div>
+                <div class="warning-actions">
+                    <button id="btn-convert-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="btn-convert-confirm" class="btn btn-primary">Convert</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="warning-overlay" class="warning-container" style="display:none;">
+            <div class="warning-card">
+                <h2 id="warning-title">No Media Detected</h2>
+                <p id="warning-message"></p>
+                <p id="warning-source-summary">Configured source: <code class="configured-source-path">photos/</code>.</p>
+                <div id="warning-server-help" class="instructions">
+                    <h3>Web Server Required</h3>
+                    <p>This gallery requires directory listing to be enabled for <code class="configured-source-path">photos/</code> and any album subfolders.</p>
+                </div>
+                <p id="warning-offline-note" class="offline-note">Opening the HTML directly with <code>file://</code> will not work because browsers cannot scan local directories.</p>
+                <div class="warning-actions">
+                    <button id="btn-retry-warning" class="btn btn-primary">Scan Again</button>
+                    <button id="btn-warning-previous" class="btn btn-secondary" hidden>Previous location</button>
+                    <button id="btn-warning-root" class="btn btn-secondary" hidden>Gallery root</button>
+                    <a id="warning-open-source" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">Open source</a>
+                </div>
+            </div>
+        </div>
+
+        <aside id="info-panel" class="info-panel" aria-label="Image details" hidden>
+            <div class="info-panel-head">
+                <span class="info-panel-title">Details</span>
+                <button id="btn-info-close" class="btn btn-secondary ff-btn ff-btn-icon" type="button" aria-label="Close details" title="Close details">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+            </div>
+            <div id="info-file-name" class="info-section info-file-name"></div>
+            <div class="info-actions" style="margin-top:10px; display:flex; gap:8px;">
+                <button id="btn-info-convert" class="btn btn-secondary" type="button" style="flex:1; height:32px; font-size:12px;">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" style="margin-right:4px;"><path fill="currentColor" d="M6.99 11 3 15l3.99 4v-3H13v-2H6.99v-3zM21 9l-3.99-4v3H11v2h6.01v3L21 9z"/></svg> Convert
+                </button>
+            </div>
+            <div class="info-loading" id="info-loading" role="status">Reading file metadata…</div>
+            <div class="info-section-title">Caption</div>
+            <div id="info-caption" class="info-text info-caption"></div>
+            <div id="caption-this-section" hidden style="margin-top:8px;">
+                <button id="btn-caption-this" class="btn btn-secondary caption-this-btn" type="button" aria-label="Caption this image" style="width:100%; height:32px; font-size:12px;">
+                    <span id="caption-this-label">Caption this Image</span>
+                </button>
+                <div id="caption-this-status" class="info-text" style="display:none; font-size:11px; margin-top:4px;"></div>
+            </div>
+            <div class="info-section-title">SD Prompt</div>
+            <div id="info-sd-prompt" class="info-text info-sd"></div>
+            <div class="info-section-title">SD Negative Prompt</div>
+            <div id="info-sd-negative" class="info-text info-sd"></div>
+            <div class="info-section-title">Generation Info</div>
+            <div id="info-sd-setting" class="info-text info-setting"></div>
+            <div id="info-workflow-section" class="info-workflow-section" hidden>
+                <div class="info-section-title">ComfyUI Workflow</div>
+                <button id="btn-info-download-workflow" class="btn btn-secondary" type="button" style="width:100%; height:32px; font-size:12px; margin-top:6px;">Download Workflow (.json)</button>
+            </div>
+            <div class="info-section-title">File Details</div>
+            <div id="info-stats" class="info-stats"></div>
+            <div class="info-section-title">EXIF Data</div>
+            <div id="info-exif" class="info-text info-exif"></div>
+            <div id="info-error" class="info-error" hidden></div>
+            <style>
+                #info-panel, #gallery-wrapper.viewer-open #info-panel {
+                    position: fixed;
+                    top: 12px;
+                    right: max(20px, calc(50vw - 820px));
+                    bottom: 12px;
+                    width: var(--gallery-info-w, 360px);
+                    background: var(--card-bg, #181b25) !important;
+                    color: var(--text, #dfe2ef) !important;
+                    overflow: auto;
+                    z-index: 2001;
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
+                    border: 1px solid var(--border, rgba(255, 255, 255, .1)) !important;
+                    border-radius: 12px !important;
+                    padding: 16px 18px 28px;
+                    font-family: inherit;
+                }
+                #info-panel .info-panel-head { display:flex; justify-content:space-between; align-items:center; }
+                #info-panel .info-panel-title { font-size:15px; font-weight:600; letter-spacing:.3px; color:var(--text, #fff); }
+                #info-panel button, #info-panel .btn, #info-panel .caption-this-btn {
+                    background: transparent !important;
+                    color: var(--text-secondary, #c7c4d7) !important;
+                    border: 1px solid var(--border, rgba(255, 255, 255, .15)) !important;
+                    border-radius: 4px !important;
+                    cursor: pointer;
+                    transition: all .15s ease;
+                }
+                #info-panel button:hover:not(:disabled), #info-panel .btn:hover:not(:disabled), #info-panel .caption-this-btn:hover:not(:disabled) {
+                    background: rgba(255, 255, 255, .08) !important;
+                    border-color: rgba(255, 255, 255, .25) !important;
+                    color: #fff !important;
+                }
+                #info-panel button:disabled { opacity: .4 !important; cursor: not-allowed; }
+                #info-panel .info-panel-head #btn-info-close {
+                    width: 28px; height: 28px; min-width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+                }
+                #info-panel .info-section-title { margin-top:14px; font-size:10px; font-weight:700; text-transform:uppercase;
+                    letter-spacing:.6px; color:var(--text-secondary, #908fa0); }
+                #info-panel .info-text { margin-top:4px; white-space:pre-wrap; word-break:break-word; font-size:12px; line-height:1.4; color:var(--text, #dfe2ef); }
+                #info-panel .info-caption { color:var(--text, #dfe2ef); }
+                #info-panel .info-sd { color:var(--text-secondary, #c7c4d7); font-style:italic; }
+                #info-panel .info-setting { color:var(--text-secondary, #908fa0); font-family:ui-monospace, monospace; }
+                #info-panel .info-file-name { font-size:12px; font-family:ui-monospace, monospace; color:var(--text-secondary, #aaa); word-break:break-all; }
+                #info-panel .info-loading { color:var(--text-secondary, #888); font-size:12px; padding-top:8px; }
+                #info-panel .info-error { color:#ef4444; font-size:12px; margin-top:12px; }
+                #info-panel .info-workflow-section button { margin-top:6px; }
+                #info-panel .info-stats { margin-top:6px; display:flex; flex-wrap:wrap; gap:6px; }
+                #info-panel .info-stat { display:inline-flex; gap:6px; align-items:baseline;
+                    background:rgba(255,255,255,.04); border:1px solid var(--border, rgba(255,255,255,.1)); border-radius:4px;
+                    padding:3px 8px; font-family:ui-monospace, monospace; font-size:11px; color:var(--text, #dfe2ef); }
+                #info-panel .info-stat-label { color:var(--text-secondary, #908fa0); text-transform:uppercase; font-size:9px; letter-spacing:.4px; }
+                #info-panel .info-exif { color:var(--text-secondary, #c7c4d7); font-family:ui-monospace, monospace; font-size:11px; background:rgba(0,0,0,.25); padding:10px; border-radius:4px; border:1px solid var(--border, rgba(255,255,255,.08)); white-space:pre-wrap; word-break:break-word; margin-bottom:16px; }
+            </style>
+        </aside>
+    </div>
+
+    <p id="config-notice" role="status" hidden></p>
+    <script src="/betarenamer/gallery/api/legacy-ui/resilience.js?v=20260831-native-decode-queue"></script>
+    <script src="/betarenamer/gallery/api/legacy-ui/settings.js?v=20260904-manifest-refresh-default"></script>
+    <script src="/betarenamer/gallery/api/legacy-ui/app.js?v=20261020-theme-bridge"></script>
+</body>
+</html>

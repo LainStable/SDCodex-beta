@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browse folders</title>
+<style>
+  /* Gallery's folder/image browser, exposed as an embeddable picker. Other
+     plugin pages open this in an iframe and listen for the pick message. */
+  :root {
+    --pk-bg: #121821;
+    --pk-panel: #171e2a;
+    --pk-line: #2b3444;
+    --pk-line-strong: #354054;
+    --pk-ink: #dfe2ef;
+    --pk-muted: #aab4c6;
+    --pk-faint: #8a94a6;
+    --pk-accent: #6366f1;
+    --pk-accent-soft: rgba(99, 102, 241, 0.16);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--pk-bg); color: var(--pk-ink);
+    font: 13px/1.45 Inter, system-ui, sans-serif;
+  }
+  header, footer, .tools, .crumbs { flex: 0 0 auto; }
+  header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 12px; border-bottom: 1px solid var(--pk-line);
+  }
+  header .title {
+    font-family: Geist, Inter, sans-serif; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.02em; margin-right: auto;
+  }
+  .chip {
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 3px 8px; border: 1px solid var(--pk-line-strong); border-radius: 4px;
+    background: rgba(255, 255, 255, 0.04); color: var(--pk-muted);
+    font: 500 10px/1.5 "JetBrains Mono", ui-monospace, monospace; cursor: pointer;
+  }
+  .chip:hover, .chip.active {
+    border-color: rgba(99, 102, 241, 0.55); background: var(--pk-accent-soft); color: #fff;
+  }
+  .crumbs {
+    display: flex; align-items: center; gap: 2px; overflow-x: auto;
+    padding: 7px 12px; border-bottom: 1px solid var(--pk-line); scrollbar-width: thin;
+  }
+  .crumbs button {
+    border: 0; background: transparent; color: var(--pk-muted);
+    font: 500 11px/1.4 "JetBrains Mono", ui-monospace, monospace;
+    padding: 2px 4px; border-radius: 3px; cursor: pointer; white-space: nowrap;
+  }
+  .crumbs button:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+  .crumbs .sep { color: var(--pk-faint); }
+  .tools { display: flex; align-items: center; gap: 10px; padding: 9px 12px 4px; }
+  .tools input {
+    flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--pk-line-strong);
+    border-radius: 5px; background: #0f1622; color: var(--pk-ink);
+    font: 500 12px/16px "JetBrains Mono", ui-monospace, monospace; outline: none;
+  }
+  .tools input:focus { border-color: #6672ee; }
+  .count { color: var(--pk-faint); font: 500 10px/1.5 "JetBrains Mono", ui-monospace, monospace; white-space: nowrap; }
+  .body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 12px; }
+  .folder-row {
+    display: flex; align-items: center; gap: 9px; width: 100%; margin: 2px 0; padding: 7px 10px;
+    text-align: left; border: 1px solid transparent; border-radius: 5px; background: transparent;
+    color: var(--pk-muted); font: 500 12px/18px "JetBrains Mono", ui-monospace, monospace;
+    overflow-wrap: anywhere; cursor: pointer;
+  }
+  .folder-row:hover, .folder-row.active {
+    border-color: rgba(99, 102, 241, 0.45); background: var(--pk-accent-soft); color: #fff;
+  }
+  .folder-row svg { flex: 0 0 auto; color: var(--pk-faint); }
+  .folder-row:hover svg { color: #a5b4fc; }
+  .folder-row.choose {
+    margin-bottom: 6px; border-color: rgba(99, 102, 241, 0.4);
+    background: var(--pk-accent-soft); color: #e0e7ff; font-weight: 600;
+  }
+  .folder-row .sub { margin-left: auto; color: var(--pk-faint); font-size: 10px; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 6px; margin-top: 8px;
+  }
+  .thumb {
+    position: relative; padding: 0; border: 1px solid var(--pk-line); border-radius: 6px;
+    overflow: hidden; background: #0d131c; cursor: pointer; aspect-ratio: 1 / 1;
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb span {
+    position: absolute; inset: auto 0 0 0; padding: 2px 4px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
+    color: #e5e7f0; font: 500 9px/1.3 "JetBrains Mono", ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .thumb:hover, .thumb.active {
+    border-color: rgba(99, 102, 241, 0.7);
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.45) inset;
+  }
+  .empty { padding: 16px 10px; color: var(--pk-faint); font: 500 12px/1.5 "JetBrains Mono", ui-monospace, monospace; }
+  .error { padding: 12px 10px; color: #fda4af; font: 500 12px/1.5 "JetBrains Mono", ui-monospace, monospace; }
+  footer {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 12px; border-top: 1px solid var(--pk-line);
+  }
+  footer .hint { color: var(--pk-faint); font: 500 10px/1.5 "JetBrains Mono", ui-monospace, monospace; }
+  footer .actions { display: flex; gap: 8px; }
+  footer button {
+    padding: 6px 12px; border: 1px solid var(--pk-line-strong); border-radius: 5px;
+    background: #202838; color: var(--pk-ink); font-size: 12px; cursor: pointer;
+  }
+  footer button:hover { border-color: #6672ee; background: #29334a; }
+  footer button.primary { border-color: rgba(99, 102, 241, 0.6); background: rgba(99, 102, 241, 0.24); color: #eef1ff; }
+  footer button.primary:hover { background: rgba(99, 102, 241, 0.34); }
+  footer button[hidden] { display: none; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="title" id="picker-title">Browse folders</span>
+    <span id="roots" style="display:flex;gap:5px;flex-wrap:wrap"></span>
+  </header>
+
+  <div class="crumbs" id="crumbs"></div>
+
+  <div class="tools">
+    <input id="filter" type="search" placeholder="Filter folders and images…" autocomplete="off" aria-label="Filter">
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="body" id="body">
+    <div id="folders"></div>
+    <div class="grid" id="images"></div>
+    <div class="empty" id="empty" hidden>This folder is empty.</div>
+  </div>
+
+  <footer>
+    <span class="hint" id="hint">↑↓ move · Enter open · Esc cancel</span>
+    <div class="actions">
+      <button type="button" id="choose-image" hidden>Choose image</button>
+      <button type="button" id="choose-folder" class="primary">Choose this folder</button>
+      <button type="button" id="cancel">Cancel</button>
+    </div>
+  </footer>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const MODE = params.get('mode') === 'file' ? 'file' : 'folder';
+  const state = { root: params.get('root') || '', path: params.get('path') || '', folders: [], images: [], selected: null, roots: [] };
+
+  const $ = (id) => document.getElementById(id);
+  const foldersEl = $('folders');
+  const imagesEl = $('images');
+  const crumbsEl = $('crumbs');
+  const rootsEl = $('roots');
+  const filterEl = $('filter');
+  const countEl = $('count');
+  const emptyEl = $('empty');
+  const hintEl = $('hint');
+  const chooseFolderBtn = $('choose-folder');
+  const chooseImageBtn = $('choose-image');
+
+  $('picker-title').textContent = MODE === 'file' ? 'Browse images' : 'Browse folders';
+  chooseFolderBtn.hidden = MODE === 'file';
+  chooseImageBtn.hidden = MODE !== 'file';
+  hintEl.textContent = MODE === 'file' ? 'Click an image to choose it · Esc cancel' : '↑↓ move · Enter open · Esc cancel';
+
+  const absPath = (rel) => (rel ? `${state.root.replace(/\/+$/, '')}/${rel}` : state.root);
+
+  const icon = (name) => `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${name}"/></svg>`;
+  const FOLDER_ICON = 'M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z';
+  const IMAGE_ICON = 'M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5z';
+
+  function send(message) {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(message, location.origin);
+    }
+  }
+
+  function choose(file) {
+    send({ type: 'sdcodex:pick', path: state.root, relative: state.path, file: file || null });
+  }
+
+  function renderRoots() {
+    rootsEl.replaceChildren();
+    for (const root of state.roots) {
+      if (root.path === state.root) continue;
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.textContent = root.label;
+      chip.title = root.path;
+      chip.addEventListener('click', () => load(root.path, ''));
+      rootsEl.appendChild(chip);
+    }
+  }
+
+  function renderCrumbs() {
+    crumbsEl.replaceChildren();
+    const rootChip = document.createElement('button');
+    rootChip.type = 'button';
+    rootChip.textContent = state.root.split('/').filter(Boolean).pop() || '/';
+    rootChip.title = state.root;
+    rootChip.addEventListener('click', () => load(state.root, ''));
+    crumbsEl.appendChild(rootChip);
+    let acc = '';
+    for (const part of state.path.split('/').filter(Boolean)) {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = '/';
+      crumbsEl.appendChild(sep);
+      acc = acc ? `${acc}/${part}` : part;
+      const target = acc;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = part;
+      btn.addEventListener('click', () => load(state.root, target));
+      crumbsEl.appendChild(btn);
+    }
+  }
+
+  function matches(name) {
+    const term = filterEl.value.trim().toLowerCase();
+    return !term || name.toLowerCase().includes(term);
+  }
+
+  function renderFolders() {
+    foldersEl.replaceChildren();
+    const visible = state.folders.filter((folder) => matches(folder.name));
+
+    const chooseRow = document.createElement('button');
+    chooseRow.type = 'button';
+    chooseRow.className = 'folder-row choose';
+    chooseRow.innerHTML = `${icon(FOLDER_ICON)}<span>Use “${state.path ? state.path.split('/').pop() : 'this folder'}”</span>`;
+    chooseRow.addEventListener('click', () => choose(null));
+    if (MODE === 'folder') foldersEl.appendChild(chooseRow);
+
+    for (const folder of visible) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'folder-row';
+      row.innerHTML = `${icon(FOLDER_ICON)}<span>${folder.name}</span><span class="sub">${folder.count} image${folder.count === 1 ? '' : 's'}</span>`;
+      row.addEventListener('click', () => load(state.root, folder.path));
+      foldersEl.appendChild(row);
+    }
+  }
+
+  function renderImages() {
+    imagesEl.replaceChildren();
+    const visible = state.images.filter((image) => matches(image.name));
+    for (const image of visible) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'thumb' + (state.selected === image.path ? ' active' : '');
+      card.title = image.name;
+      card.innerHTML = `<img src="${image.url}" alt="" loading="lazy"><span>${image.name}</span>`;
+      card.addEventListener('click', () => {
+        state.selected = image.path;
+        if (MODE === 'file') {
+          choose(image.name);
+          return;
+        }
+        renderImages();
+      });
+      card.addEventListener('dblclick', () => choose(image.name));
+      imagesEl.appendChild(card);
+    }
+    emptyEl.hidden = state.folders.length + state.images.length > 0;
+  }
+
+  function render() {
+    renderRoots();
+    renderCrumbs();
+    renderFolders();
+    renderImages();
+    countEl.textContent = `${state.folders.length} folder${state.folders.length === 1 ? '' : 's'} · ${state.images.length} image${state.images.length === 1 ? '' : 's'}`;
+  }
+
+  async function load(root, path) {
+    const nextRoot = root || state.root;
+    const url = `/betarenamer/gallery/api/picker/list?root=${encodeURIComponent(nextRoot)}&path=${encodeURIComponent(path || '')}`;
+    try {
+      const response = await fetch(url, { credentials: 'same-origin' });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+      state.root = data.root;
+      state.path = data.path || '';
+      state.folders = data.folders || [];
+      state.images = data.images || [];
+      state.roots = data.roots || [];
+      state.selected = null;
+      render();
+    } catch (error) {
+      foldersEl.innerHTML = `<div class="error">${String(error.message || error)}</div>`;
+      imagesEl.replaceChildren();
+      countEl.textContent = '';
+      emptyEl.hidden = true;
+    }
+  }
+
+  filterEl.addEventListener('input', () => { renderFolders(); renderImages(); });
+  chooseFolderBtn.addEventListener('click', () => choose(null));
+  chooseImageBtn.addEventListener('click', () => {
+    const image = state.images.find((item) => item.path === state.selected);
+    if (image) choose(image.name);
+  });
+  $('cancel').addEventListener('click', () => send({ type: 'sdcodex:pick-cancel' }));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') send({ type: 'sdcodex:pick-cancel' });
+    if (event.key === 'Enter' && MODE === 'folder' && document.activeElement === document.body) choose(null);
+  });
+
+  load(state.root, state.path);
+})();
+</script>
+</body>
+</html>

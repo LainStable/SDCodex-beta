@@ -1,0 +1,9 @@
+requests>=2.31.0
+# Video frame extraction. The wheel bundles an ffmpeg binary so the plugin
+# works on hosts and containers without a system ffmpeg; a system ffmpeg is
+# still preferred when one is on PATH. ffprobe stays optional (duration falls
+# back to reading ffmpeg's own output).
+imageio-ffmpeg>=0.5.1
+Pillow>=10.0.0
+piexif>=1.1.3
+sd-prompt-reader>=0.1.0; python_version<'3.14'
