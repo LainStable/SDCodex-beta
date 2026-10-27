@@ -1,7 +1,7 @@
 {
   "id": "betarenamer",
   "name": "Beta Renamer",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Beta AI Renamer with the Gallery browser built in (grid, folders and viewer). Uses the same media root as Gallery.",
   "author": "LainStable",
   "repository": "https://github.com/LainStable/SDCodex-beta",

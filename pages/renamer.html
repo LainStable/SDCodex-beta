@@ -30,16 +30,26 @@
     input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(99,102,241,0.25)}
     select{appearance:none;padding-right:30px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23908fa0' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
     textarea{resize:vertical;min-height:82px;line-height:1.5}
-    .shell{max-width:1800px;margin:0 auto;padding:20px;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px}
-    .workspace,.parameters{min-width:0}
-    .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
+    .app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);background:rgba(15,23,42,0.8);backdrop-filter:blur(12px)}
     .brand{display:flex;align-items:center;gap:10px;font-family:Geist,Inter,sans-serif;font-size:20px;font-weight:600;letter-spacing:-0.01em}
     .beta-tag{margin-left:8px;border:1px solid rgba(99,102,241,0.5);border-radius:3px;background:rgba(99,102,241,0.18);padding:2px 6px;color:#b9baff;font:600 9px/1.4 "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em}
     .brand-mark{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,var(--primary),var(--tertiary));border:1px solid rgba(255,255,255,0.2);font-size:16px}
     .status{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(16,185,129,0.35);border-radius:3px;background:rgba(16,185,129,0.12);color:#6ee7b7;padding:4px 8px;font:600 10px/14px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+    /* The single grid row must not grow past the viewport, or the sidebar's
+       internal scroll never engages and the browser pane is pushed off-screen. */
+    .workspace{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr);flex:1;min-height:0}
+    .browser-pane{min-width:0;min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--lowest);overflow:hidden}
+    .browser-pane iframe{width:100%;height:100%;border:0;background:var(--lowest)}
+    .sidebar-pane{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+    .sidebar-scroll{flex:1;min-height:0;overflow-y:auto;padding:14px 20px}
+    /* The legacy .parameters card rule would otherwise keep this pane sticky at
+       content height, so it is un-carded here with two-class specificity. */
+    .parameters.sidebar-pane{position:static;height:100%;max-height:100%;border:0;border-radius:0;background:transparent;backdrop-filter:none;padding:0}
+    .parameters.sidebar-pane::before{display:none}
     .path-label,.label{display:block;color:var(--ink-faint);font:600 10px/14px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;margin:14px 0 6px}
     .subtle{color:var(--ink-faint)}
-    .pathbar,.batchbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;background:rgba(15,23,42,0.8);backdrop-filter:blur(12px);padding:8px;margin-bottom:12px}
+    .pathbar,.batchbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;background:rgba(15,23,42,0.8);backdrop-filter:blur(12px);padding:8px}
     .pathbar input{flex:1;min-width:200px}
     .filters{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:14px 0 10px}
     .filter-left,.filter-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
@@ -51,23 +61,22 @@
     .metric{color:var(--ink-faint);font:500 11px/16px "JetBrains Mono",ui-monospace,monospace}
     .metric b{color:var(--primary-light)}
     .accent{color:#a5b4fc}.warning{color:#fcd34d}.danger{color:#f87171}
-    .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
-    .card{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;background:rgba(15,23,42,0.8);backdrop-filter:blur(12px);transition:border-color .15s}
-    .card:hover{border-color:rgba(99,102,241,0.4)}
-    .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px}
-    .card-title{font-family:Geist,Inter,sans-serif;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .card-info{color:var(--ink-faint);font:600 10px/14px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;margin-top:3px}
-    .thumb{min-height:120px;border:1px solid var(--line);border-radius:4px;background:var(--lowest);overflow:hidden;position:relative;margin-bottom:8px}
-    .thumb img{display:block;width:100%;height:auto}
-    .type-label{position:absolute;left:8px;bottom:8px;border:1px solid var(--line-strong);border-radius:3px;background:rgba(10,14,23,0.85);padding:2px 6px;color:var(--ink-muted);font:600 10px/14px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase}
-    .state{border:1px solid var(--line-strong);border-radius:3px;background:rgba(255,255,255,0.05);padding:2px 6px;color:var(--ink-muted);font:600 10px/14px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+    #cards{display:flex;flex-direction:column;gap:8px}
+    .empty{border:1px dashed var(--line-strong);border-radius:8px;padding:30px 20px;text-align:center;color:var(--ink-faint);font-size:12px}
+    .staging-row{border:1px solid var(--line);border-radius:8px;background:rgba(15,23,42,0.8);backdrop-filter:blur(12px);padding:10px;transition:border-color .15s}
+    .staging-row:hover{border-color:rgba(99,102,241,0.4)}
+    .staging-row-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
+    .staging-row-title{font-family:Geist,Inter,sans-serif;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .staging-row-meta{color:var(--ink-faint);font:600 9px/13px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;margin-top:2px}
+    .staging-row-path{color:var(--ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 10px/14px "JetBrains Mono",ui-monospace,monospace;margin-bottom:6px}
+    .state{display:inline-flex;align-items:center;border:1px solid var(--line-strong);border-radius:3px;background:rgba(255,255,255,0.05);padding:2px 6px;color:var(--ink-muted);font:600 10px/14px "JetBrains Mono",ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
     .state.ready{border-color:rgba(16,185,129,0.35);background:rgba(16,185,129,0.12);color:#6ee7b7}
     .state.error{border-color:rgba(239,68,68,0.4);background:rgba(239,68,68,0.12);color:#f87171}
-    .rename-row{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:8px}
-    .rename-row input{min-width:0;font:500 12px/16px "JetBrains Mono",ui-monospace,monospace;padding:7px 10px}
+    .staging-row-rename{display:grid;grid-template-columns:1fr auto;gap:6px}
+    .staging-row-rename input{min-width:0;font:500 11px/15px "JetBrains Mono",ui-monospace,monospace;padding:5px 8px}
+    .staging-row-rename button{padding:5px 8px;font-size:11px}
     .original{color:var(--ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 11px/16px "JetBrains Mono",ui-monospace,monospace}
-    .card-error{color:#f87171;font:400 11px/16px Inter,sans-serif;margin-top:8px}
-    .empty{grid-column:1/-1;border:1px dashed var(--line-strong);border-radius:8px;padding:40px;text-align:center;color:var(--ink-faint);font-size:13px}
+    .card-error{color:#f87171;font:400 10px/15px Inter,sans-serif;margin-top:6px}
     .parameters{position:sticky;top:12px;height:max-content;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:rgba(15,23,42,0.8);backdrop-filter:blur(12px);padding:14px}
     .parameters::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(99,102,241,0.4),transparent)}
     .param-head{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:4px}
@@ -102,86 +111,96 @@
     .modal-foot .path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-faint);font:500 11px/1.5 "JetBrains Mono",ui-monospace,monospace}
     .modal-foot button.primary{border-color:rgba(99,102,241,0.55);background:rgba(99,102,241,0.25);color:#fff}
     .footer-note{color:var(--ink-faint);font:400 11px/1.6 Inter,sans-serif;margin-top:12px}
-    @media(max-width:1500px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
-    @media(max-width:1000px){.shell{grid-template-columns:1fr}.parameters{position:static;grid-row:1}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media(max-width:620px){.shell{padding:12px}.cards{grid-template-columns:1fr}.topbar{align-items:flex-start}.parameters{padding:11px}.batchbar button{flex:1}}
+    @media(max-width:1000px){.workspace{grid-template-columns:1fr;grid-template-rows:1fr auto;height:auto;overflow-y:auto}.browser-pane{height:60vh;border-right:0;border-bottom:1px solid var(--line)}.sidebar-pane{height:auto}.app{height:auto;overflow:visible}}
+    @media(max-width:620px){.pathbar input{min-width:0;width:100%}.provider-row{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}.batchbar button{flex:1}.sidebar-scroll{padding:12px}}
   </style>
 </head>
 <body>
-  <main class="shell">
-    <section class="workspace" aria-label="Media rename workspace">
-      <header class="topbar">
-        <div class="brand"><span class="brand-mark" aria-hidden="true">✎</span><span>Beta Renamer</span><span class="beta-tag">BETA · GALLERY BUILT IN</span></div>
-        <span id="engine-status">Checking engine…</span>
-      </header>
-      <div class="path-label label" style="margin-top:0">Folder workspace</div>
-      <div class="pathbar">
-        <input id="folder-path" aria-label="Folder path" placeholder="/data/downloads">
-        <button id="change-folder" type="button">Browse folders &amp; images</button>
-        <button id="scan-folder" class="primary" type="button">↻ &nbsp;Scan Folder</button>
-      </div>
-      <div class="filters">
-        <div class="filter-left">
-          <label class="check"><input id="recursive" type="checkbox" checked> Recursive Subdirs</label>
-          <span id="selection-count" class="metric">Select <b>0</b> · 0 files staged</span>
-        </div>
-        <div class="filter-right">
-          <label class="check"><input id="select-all" type="checkbox"> Select All</label>
-          <span id="files-count" class="metric">0 files</span>
-        </div>
-      </div>
-      <div class="batchbar">
-        <button id="revert" class="revert" type="button" disabled>↶ &nbsp;Revert Last Batch</button>
-        <button id="dry-run" type="button" class="primary">Run Dry-Run Preview</button>
-        <button id="rename-all" type="button" class="primary" disabled>⚡ &nbsp;Batch Rename All (0)</button>
-        <div id="progress" class="progress" hidden><span id="progress-label">Analyzing…</span><span class="progress-track"><i id="progress-bar"></i></span></div>
-      </div>
-      <div id="summary" class="subtle" style="margin:0 0 10px">Choose a folder and scan it. Dry-run previews names without changing files.</div>
-      <div id="cards" class="cards"><div class="empty">Choose a folder to start staging media for AI renaming.</div></div>
-      <p class="footer-note">A dry-run never modifies files. Rename operations keep the original extension and avoid overwriting existing files. API keys are stored server-side with owner-only file permissions.</p>
-    </section>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">✎</span><span>Beta Renamer</span><span class="beta-tag">BETA · GALLERY BUILT IN</span></div>
+      <span id="engine-status">Checking engine…</span>
+    </header>
 
-    <aside class="parameters" aria-label="AI Renamer parameters">
-      <div class="param-head"><div><strong>☷ &nbsp;ai-renamer Parameters</strong><div class="subtitle">CLI-compatible · vision engine</div></div></div>
-      <span class="label">AI Provider (-p, --provider)</span>
-      <div class="provider-row">
-        <button type="button" data-provider="lm-studio">LM Studio</button>
-        <button type="button" data-provider="ollama">Ollama</button>
-        <button type="button" data-provider="openai">OpenAI</button>
-      </div>
-      <label class="label" for="model">Loaded Vision Model (-m, --model)</label>
-      <div class="two"><select id="model"><option value="">Choose model…</option></select><button id="load-models" type="button">Load Models</button></div>
-      <label class="label" for="base-url">Base URL (-u, --base-url)</label>
-      <div class="two"><input id="base-url" type="url" spellcheck="false"><button id="ping" type="button">● Ping</button></div>
-      <label class="label">Case Convention (-c, --case)</label>
-      <div class="provider-row" style="grid-template-columns:1fr 1fr">
-        <button type="button" data-case="kebabCase">● kebabCase</button>
-        <button type="button" data-case="camelCase">camelCase</button>
-        <button type="button" data-case="snakeCase">snake_case</button>
-        <button type="button" data-case="pascalCase">PascalCase</button>
-      </div>
-      <div class="two">
-        <div><label class="label" for="max-chars">Max Chars (-x)</label><div class="suffix"><input id="max-chars" type="number" min="1" max="180"><small>chars</small></div></div>
-        <div><label class="label" for="frames">Video Frames (-f)</label><div class="suffix"><input id="frames" type="number" min="1" max="20"><small>frames</small></div></div>
-      </div>
-      <label class="label" for="language">Target Language (-l, --language)</label>
-      <select id="language">
-        <option>English</option><option>Turkish</option><option>Spanish</option><option>French</option><option>German</option><option>Japanese</option><option>Korean</option><option>Chinese</option><option>Portuguese</option><option>Italian</option><option>Arabic</option>
-      </select>
-      <label class="label" for="api-key">API Key (OpenAI-compatible)</label>
-      <input id="api-key" type="password" autocomplete="new-password" placeholder="Optional · leave blank to keep saved key">
-      <label class="check" style="margin-top:7px"><input id="clear-api-key" type="checkbox"> Clear saved API key</label>
-      <label class="label" for="custom-prompt">Custom AI Vision Prompt (-r)</label>
-      <textarea id="custom-prompt" placeholder="Only describe the main subject, style and prominent colors. Avoid generic terms."></textarea>
-      <div class="check" style="margin-top:10px"><label class="check"><input id="settings-recursive" type="checkbox" checked> Include Subdirectories</label></div>
-      <div class="config-actions"><button id="save-settings" class="primary" type="button">Save Settings</button></div>
-      <div class="syntax">
-        <div class="syntax-head"><span>Compiled CLI Syntax</span><button id="copy-command" type="button" style="padding:3px 7px">Copy</button></div>
-        <div id="command" class="command">ai-renamer /data/downloads --provider=ollama</div>
-      </div>
-      <p class="footer-note">The provider URL must be reachable from the SDCodex backend. For Docker, use a host/LAN address reachable from the container instead of its 127.0.0.1.</p>
-    </aside>
-  </main>
+    <main class="workspace">
+      <section class="browser-pane" aria-label="Media browser">
+        <iframe id="renamer-browser" title="Media browser" src="/api/plugins/betarenamer/page/browser?embed=caption"></iframe>
+      </section>
+
+      <aside class="parameters sidebar-pane" aria-label="AI Renamer parameters">
+        <div class="sidebar-scroll">
+          <div class="path-label label" style="margin-top:0">Folder workspace</div>
+          <div class="pathbar">
+            <input id="folder-path" aria-label="Folder path" placeholder="/data/downloads">
+            <button id="change-folder" type="button">Browse folders &amp; images</button>
+            <button id="scan-folder" class="primary" type="button">↻ &nbsp;Scan Folder</button>
+          </div>
+
+          <div class="param-head" style="margin-top:0;padding-top:0"><div><strong>☷ &nbsp;ai-renamer Parameters</strong><div class="subtitle">CLI-compatible · vision engine</div></div></div>
+          <span class="label">AI Provider (-p, --provider)</span>
+          <div class="provider-row">
+            <button type="button" data-provider="lm-studio">LM Studio</button>
+            <button type="button" data-provider="ollama">Ollama</button>
+            <button type="button" data-provider="openai">OpenAI</button>
+          </div>
+          <label class="label" for="model">Loaded Vision Model (-m, --model)</label>
+          <div class="two"><select id="model"><option value="">Choose model…</option></select><button id="load-models" type="button">Load Models</button></div>
+          <label class="label" for="base-url">Base URL (-u, --base-url)</label>
+          <div class="two"><input id="base-url" type="url" spellcheck="false"><button id="ping" type="button">● Ping</button></div>
+          <label class="label">Case Convention (-c, --case)</label>
+          <div class="provider-row" style="grid-template-columns:1fr 1fr">
+            <button type="button" data-case="kebabCase">● kebabCase</button>
+            <button type="button" data-case="camelCase">camelCase</button>
+            <button type="button" data-case="snakeCase">snake_case</button>
+            <button type="button" data-case="pascalCase">PascalCase</button>
+          </div>
+          <div class="two">
+            <div><label class="label" for="max-chars">Max Chars (-x)</label><div class="suffix"><input id="max-chars" type="number" min="1" max="180"><small>chars</small></div></div>
+            <div><label class="label" for="frames">Video Frames (-f)</label><div class="suffix"><input id="frames" type="number" min="1" max="20"><small>frames</small></div></div>
+          </div>
+          <label class="label" for="language">Target Language (-l, --language)</label>
+          <select id="language">
+            <option>English</option><option>Turkish</option><option>Spanish</option><option>French</option><option>German</option><option>Japanese</option><option>Korean</option><option>Chinese</option><option>Portuguese</option><option>Italian</option><option>Arabic</option>
+          </select>
+          <label class="label" for="api-key">API Key (OpenAI-compatible)</label>
+          <input id="api-key" type="password" autocomplete="new-password" placeholder="Optional · leave blank to keep saved key">
+          <label class="check" style="margin-top:7px"><input id="clear-api-key" type="checkbox"> Clear saved API key</label>
+          <label class="label" for="custom-prompt">Custom AI Vision Prompt (-r)</label>
+          <textarea id="custom-prompt" placeholder="Only describe the main subject, style and prominent colors. Avoid generic terms."></textarea>
+          <div class="check" style="margin-top:10px"><label class="check"><input id="settings-recursive" type="checkbox" checked> Include Subdirectories</label></div>
+          <div class="config-actions"><button id="save-settings" class="primary" type="button">Save Settings</button></div>
+          <div class="syntax">
+            <div class="syntax-head"><span>Compiled CLI Syntax</span><button id="copy-command" type="button" style="padding:3px 7px">Copy</button></div>
+            <div id="command" class="command">ai-renamer /data/downloads --provider=ollama</div>
+          </div>
+
+          <div class="batchbar" style="margin-top:16px">
+            <button id="revert" class="revert" type="button" disabled>↶ &nbsp;Revert Last Batch</button>
+            <button id="dry-run" type="button" class="primary">Run Dry-Run Preview</button>
+            <button id="rename-all" type="button" class="primary" disabled>⚡ &nbsp;Batch Rename All (0)</button>
+            <div id="progress" class="progress" hidden><span id="progress-label">Analyzing…</span><span class="progress-track"><i id="progress-bar"></i></span></div>
+          </div>
+
+          <div id="summary" class="subtle" style="margin:10px 0">Choose a folder and scan it. Dry-run previews names without changing files.</div>
+
+          <div class="filters">
+            <div class="filter-left">
+              <label class="check"><input id="recursive" type="checkbox" checked> Recursive Subdirs</label>
+              <span id="selection-count" class="metric">Select <b>0</b> · 0 files staged</span>
+            </div>
+            <div class="filter-right">
+              <label class="check"><input id="select-all" type="checkbox"> Select All</label>
+              <span id="files-count" class="metric">0 files</span>
+            </div>
+          </div>
+
+          <div id="cards"><div class="empty">Choose a folder to start staging media for AI renaming.</div></div>
+          <p class="footer-note">A dry-run never modifies files. Rename operations keep the original extension and avoid overwriting existing files. API keys are stored server-side with owner-only file permissions.</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
   <div id="message" class="message" role="status" hidden></div>
   <div id="folder-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="folder-title">
     <div class="modal-box">
@@ -276,12 +295,12 @@
         }
         for (const file of state.files) {
           const card = document.createElement("article");
-          card.className = "card";
-          const previewUrl = queryPath("preview", { path: file.path });
+          card.className = "staging-row";
+          card.dataset.path = file.path;
           const extension = file.name.split(".").pop()?.toUpperCase() || "MEDIA";
           const stem = file.name.includes(".") ? file.name.slice(0, file.name.lastIndexOf(".")) : file.name;
           const stateLabel = file.status === "ready" ? "Ready to rename" : file.status === "renamed" ? "Renamed" : file.status === "error" ? "Error" : file.status === "pending" ? "Staged" : "Selected for rename";
-          card.innerHTML = `<div class="card-head"><label class="check" style="min-width:0"><input class="file-check" type="checkbox" ${state.selected.has(file.path) ? "checked" : ""}><span style="min-width:0"><div class="card-title">${escapeHtml(file.name)}</div><div class="card-info">${(file.size / 1048576).toFixed(1)} MB · ${extension}</div></span></label><span class="state ${file.status === "ready" || file.status === "renamed" ? "ready" : file.status === "error" ? "error" : ""}">${stateLabel}</span></div><div class="thumb"><span class="type-label">${file.kind}</span></div><div class="original" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}</div><div class="rename-row"><input class="suggestion" aria-label="Suggested filename" value="${escapeHtml(file.suggested_name || stem)}" ${file.status === "renamed" ? "disabled" : ""}><button class="rename-one" type="button" ${file.status !== "ready" ? "disabled" : ""}>Rename Now</button></div>${file.error ? `<div class="card-error">${escapeHtml(file.error)}</div>` : ""}`;
+          card.innerHTML = `<div class="staging-row-head"><label class="check" style="min-width:0"><input class="file-check" type="checkbox" ${state.selected.has(file.path) ? "checked" : ""}><span style="min-width:0"><div class="staging-row-title">${escapeHtml(file.name)}</div><div class="staging-row-meta">${(file.size / 1048576).toFixed(1)} MB · ${extension}</div></span></label><span class="state ${file.status === "ready" || file.status === "renamed" ? "ready" : file.status === "error" ? "error" : ""}">${stateLabel}</span></div><div class="staging-row-path" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}</div><div class="staging-row-rename"><input class="suggestion" aria-label="Suggested filename" value="${escapeHtml(file.suggested_name || stem)}" ${file.status === "renamed" ? "disabled" : ""}><button class="rename-one" type="button" ${file.status !== "ready" ? "disabled" : ""}>Rename Now</button></div>${file.error ? `<div class="card-error">${escapeHtml(file.error)}</div>` : ""}`;
           const check = card.querySelector(".file-check");
           check.addEventListener("change", () => { if (check.checked) state.selected.add(file.path); else state.selected.delete(file.path); updateCounts(); });
           card.querySelector(".suggestion").addEventListener("input", (event) => { file.suggested_name = event.target.value; });
@@ -304,6 +323,7 @@
           ? `Showing the first ${state.files.length} supported files in ${location} — this folder holds more. Browse for a narrower folder, then stage and run a dry-run preview.`
           : `Found ${state.files.length} supported files in ${location}. Select the files to stage, then run a dry-run preview.`;
         renderCards();
+        syncBrowserFolder(path);
       }
       async function loadSettings() {
         const settings = await request(`${api}/settings`);
@@ -313,7 +333,7 @@
         $("max-chars").value = settings.max_chars;
         $("frames").value = settings.frames;
         $("language").value = settings.language;
-        $("custom-prompt").value = settings.custom_prompt;
+        $("custom-prompt").value = settings.custom_prompt ?? "";
         $("settings-recursive").checked = settings.include_subdirectories;
         $("recursive").checked = settings.include_subdirectories;
         if (settings.model) $("model").innerHTML = `<option value="${escapeHtml(settings.model)}">${escapeHtml(settings.model)}</option>`;
@@ -435,7 +455,7 @@
           const result = job.items.find((item) => item.path === path);
           if (!file || !result || result.status !== "ready") continue;
           const value = file.suggested_name.trim();
-          if (!value || /[\\/\\0]/.test(value) || value === "." || value === "..") throw new Error("Suggested names must be a non-empty filename without slashes.");
+          if (!value || /[\\/\0]/.test(value) || value === "." || value === "..") throw new Error("Suggested names must be a non-empty filename without slashes.");
           result.suggested_name = value;
           edits.set(path, value);
         }
@@ -477,6 +497,7 @@
       // folder lives outside the Gallery root.
       const GALLERY_PAGE = "/api/plugins/betarenamer/page/browser";
       const GALLERY_STATUS = "/betarenamer/gallery/api/status";
+      const renamerBrowser = $("renamer-browser");
       const trimPath = (value) => String(value || "").replace(/\/+$/, "");
       function pickerUrl(root) {
         const params = new URLSearchParams({ mode: "folder" });
@@ -501,6 +522,23 @@
         if (state.browseMode !== "gallery") return;
         const album = galleryAlbum();
         $("gallery-current").textContent = album ? `${state.browseRoot}/${album}` : state.browseRoot;
+      }
+      /** Point the always-visible boilerplate browser at the current renaming
+          folder (relative to the Gallery root) so the two panes stay in sync. */
+      async function syncBrowserFolder(path) {
+        if (!renamerBrowser) return;
+        const gallery = await galleryRoot();
+        const current = trimPath(path || $("folder-path").value);
+        const insideGallery = gallery && (!current || current === gallery || current.startsWith(`${gallery}/`));
+        let album = "";
+        if (insideGallery && current && current !== gallery) {
+          album = current.slice(gallery.length + 1);
+        }
+        const src = insideGallery
+          ? `${GALLERY_PAGE}?album=${encodeURIComponent(album)}&embed=caption`
+          : `${GALLERY_PAGE}?embed=caption`;
+        const absSrc = new URL(src, window.location.href).href;
+        if (renamerBrowser.src !== absSrc) renamerBrowser.src = src;
       }
       function closePicker() {
         $("folder-modal").classList.remove("open");
@@ -546,6 +584,29 @@
         closePicker();
         scanFolder().catch((error) => notify(error.message, true));
       }
+      /** A media tile was clicked in the embedded boilerplate browser. Match it
+          to a staged file when possible and scroll that row into view. */
+      function handleBetaMedia(data) {
+        const { file, path, url } = data || {};
+        if (!file) return;
+        let matches = state.files.filter((item) => item.name === file);
+        if (matches.length > 1 && path) {
+          const normPath = String(path).replace(/^\/+/, "").toLowerCase();
+          const narrowed = matches.filter((item) => {
+            const itemPath = String(item.path || "").toLowerCase();
+            return normPath && (itemPath.endsWith(normPath) || itemPath.includes(`/${normPath}`));
+          });
+          if (narrowed.length) matches = narrowed;
+        }
+        if (matches.length >= 1) {
+          const item = matches[0];
+          state.selected.add(item.path);
+          renderCards();
+          const selector = `[data-path="${String(item.path).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"]`;
+          const row = document.querySelector(selector);
+          if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+      }
       function bind() {
         $("scan-folder").addEventListener("click", () => scanFolder().catch((error) => notify(error.message, true)));
         $("change-folder").addEventListener("click", openFolders);
@@ -556,6 +617,7 @@
           if (event.origin !== window.location.origin) return;
           if (event.data?.type === "sdcodex:pick") applyPickedFolder(event.data);
           if (event.data?.type === "sdcodex:pick-cancel") closePicker();
+          if (event.data?.type === "sdcodex:beta-media") handleBetaMedia(event.data);
         });
         document.addEventListener("keydown", (event) => {
           if (event.key === "Escape" && $("folder-modal").classList.contains("open")) closePicker();
