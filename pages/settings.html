@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>Beta Gallery Settings · SDCodex</title>
+<title>Beta Settings · SDCodex</title>
 <link href="https://fonts.googleapis.com" rel="preconnect"/>
 <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
@@ -31,7 +31,7 @@ tailwind.config = { darkMode: "class", theme: { extend: { colors: {
   <nav class="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em]">
     <span class="flex items-center gap-2 text-white font-semibold mr-2">
       <span class="material-symbols-outlined text-badge-sdxl">tune</span>
-      SDCodex Beta Gallery Settings
+      SDCodex Beta Settings
     </span>
     <span class="text-ink-faint">· Disk &amp; Metadata Configuration</span>
   </nav>
@@ -75,60 +75,6 @@ tailwind.config = { darkMode: "class", theme: { extend: { colors: {
 
 
   <div class="rounded-xl border border-outline-variant/30 bg-surface-container-low p-5 flex flex-col gap-4 shadow-sm">
-    <div class="flex items-center justify-between border-b border-outline-variant/20 pb-3">
-      <div>
-        <h2 class="font-display font-semibold text-white text-base">Immich Servers</h2>
-        <p class="font-mono text-xs text-outline mt-0.5">Browse one or more Immich servers alongside the local disk. Each name becomes a selectable source in the Gallery sidebar.</p>
-      </div>
-      <span class="rounded bg-badge-sdxl/20 text-badge-sdxl border border-badge-sdxl/30 px-2 py-0.5 font-mono text-[10px]">REMOTE</span>
-    </div>
-
-    <div id="immich-rows" class="flex flex-col gap-2 font-mono text-xs">
-      <p class="text-outline">Loading servers…</p>
-    </div>
-
-    <form id="immich-form" class="flex flex-col gap-3 font-mono text-xs border-t border-outline-variant/20 pt-4">
-      <input type="hidden" id="immich-id"/>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label class="text-[10px] uppercase text-outline block mb-1">Server name</label>
-          <input id="immich-name" type="text" placeholder="e.g. Home NAS" autocomplete="off"
-                 class="w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-white focus:outline-none focus:border-badge-checkpoint"/>
-          <p class="text-[10px] text-outline mt-1">Shown as the source name in the Gallery sidebar.</p>
-        </div>
-        <div>
-          <label class="text-[10px] uppercase text-outline block mb-1">Server URL</label>
-          <input id="immich-url" type="text" placeholder="https://immich.example.com" autocomplete="off" spellcheck="false"
-                 class="w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-white focus:outline-none focus:border-badge-checkpoint"/>
-          <p class="text-[10px] text-outline mt-1">Base address only — <code>/api</code> is added automatically.</p>
-        </div>
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label class="text-[10px] uppercase text-outline block mb-1">API key</label>
-          <input id="immich-key" type="password" placeholder="Immich → User settings → API Keys" autocomplete="new-password"
-                 class="w-full rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-white focus:outline-none focus:border-badge-checkpoint"/>
-          <p class="text-[10px] text-outline mt-1">Stored server-side on this machine and never sent back to the browser.</p>
-        </div>
-        <div class="flex flex-col justify-end gap-2 pb-1">
-          <label class="flex items-center gap-2 text-[11px] text-on-surface-variant">
-            <input id="immich-insecure" type="checkbox" class="rounded border-outline-variant/40 bg-surface-container-lowest"/>
-            Allow a self-signed certificate
-          </label>
-          <div class="flex items-center gap-2">
-            <button id="immich-save" type="submit" class="sd-btn sd-btn-primary">
-              <span class="material-symbols-outlined text-[16px]">add</span>
-              <span id="immich-save-label">Add server</span>
-            </button>
-            <button id="immich-cancel" type="button" hidden class="sd-btn">Cancel</button>
-            <span id="immich-status" class="text-[11px] text-outline"></span>
-          </div>
-        </div>
-      </div>
-    </form>
-  </div>
-
-  <div class="rounded-xl border border-outline-variant/30 bg-surface-container-low p-5 flex flex-col gap-4 shadow-sm">
     <div class="border-b border-outline-variant/20 pb-3">
       <h2 class="font-display font-semibold text-white text-base">Metadata &amp; Cache Options</h2>
       <p class="font-mono text-xs text-outline mt-0.5">Control how image prompt metadata and ComfyUI graphs are indexed.</p>
@@ -166,7 +112,7 @@ tailwind.config = { darkMode: "class", theme: { extend: { colors: {
 
   async function load() {
     try {
-      const res = await fetch('/beta-gallery/api/status?counts=1');
+      const res = await fetch('/beta/api/status?counts=1');
       if (res.ok) {
         const d = await res.json();
         rootInput.value = d.root || '';
@@ -188,7 +134,7 @@ tailwind.config = { darkMode: "class", theme: { extend: { colors: {
   btnClearCache.addEventListener('click', async () => {
     try {
       btnClearCache.textContent = 'Clearing...';
-      await fetch('/beta-gallery/api/rescan', { method: 'POST' });
+      await fetch('/beta/api/rescan', { method: 'POST' });
       btnClearCache.textContent = 'Cleared!';
       setTimeout(() => { btnClearCache.textContent = 'Clear Cache'; }, 1500);
       load();
@@ -202,150 +148,5 @@ tailwind.config = { darkMode: "class", theme: { extend: { colors: {
 })();
 </script>
 
-<script>
-(function () {
-  const $ = (id) => document.getElementById(id);
-  const rows = $('immich-rows');
-  const form = $('immich-form');
-  const status = $('immich-status');
-  const saveLabel = $('immich-save-label');
-  const cancel = $('immich-cancel');
-
-  function say(text, kind = '') {
-    status.textContent = text || '';
-    status.className = 'text-[11px] ' + (kind === 'bad' ? 'text-status-alert' : kind === 'good' ? 'text-status-active' : 'text-outline');
-  }
-
-  function lastCheck(row) {
-    const check = row.lastCheck;
-    if (!check) return '<span class="text-outline">never tested</span>';
-    if (check.ok) return `<span class="text-status-active">online${check.version ? ' · ' + check.version : ''}</span>`;
-    return `<span class="text-status-alert">failed: ${check.error || 'unknown error'}</span>`;
-  }
-
-  function rowNode(row) {
-    const wrap = document.createElement('div');
-    wrap.className = 'flex flex-wrap items-center gap-2 p-2 rounded bg-surface-container-lowest/60 border border-outline-variant/20';
-    wrap.innerHTML = `
-      <div class="flex-1 min-w-[12rem]">
-        <span class="text-white font-semibold block truncate">${row.name}</span>
-        <span class="text-outline text-[11px] break-all">${row.url} · ${row.hasKey ? 'API key set' : 'no API key'}${row.verifyTls ? '' : ' · self-signed allowed'}</span>
-      </div>
-      <div class="text-[11px]">${lastCheck(row)}</div>`;
-    const test = document.createElement('button');
-    test.type = 'button';
-    test.className = 'px-2 py-1 rounded bg-surface-container-high hover:bg-slate-surface text-secondary border border-outline-variant/40';
-    test.textContent = 'Test';
-    test.addEventListener('click', async () => {
-      test.disabled = true;
-      test.textContent = 'Testing…';
-      try {
-        const res = await fetch(`/beta-gallery/api/immich/servers/${row.id}/test`, { method: 'POST' });
-        const data = await res.json();
-        say(data.ok ? `Connected to ${row.name}${data.version ? ' · ' + data.version : ''}` : `${row.name}: ${data.error || 'failed'}`,
-            data.ok ? 'good' : 'bad');
-      } catch (error) {
-        say('Test failed: ' + error.message, 'bad');
-      }
-      test.disabled = false;
-      test.textContent = 'Test';
-      load();
-    });
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'px-2 py-1 rounded bg-surface-container-high hover:bg-slate-surface text-on-surface border border-outline-variant/40';
-    edit.textContent = 'Edit';
-    edit.addEventListener('click', () => {
-      $('immich-id').value = row.id;
-      $('immich-name').value = row.name;
-      $('immich-url').value = row.url;
-      $('immich-key').value = '';
-      $('immich-insecure').checked = !row.verifyTls;
-      saveLabel.textContent = 'Save changes';
-      cancel.hidden = false;
-      $('immich-name').focus();
-    });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'px-2 py-1 rounded bg-surface-container-high hover:bg-slate-surface text-status-alert border border-outline-variant/40';
-    remove.textContent = 'Remove';
-    remove.addEventListener('click', async () => {
-      if (!confirm(`Remove the Immich server “${row.name}”?`)) return;
-      await fetch(`/beta-gallery/api/immich/servers/${row.id}`, { method: 'DELETE' });
-      load();
-    });
-    wrap.append(test, edit, remove);
-    return wrap;
-  }
-
-  async function load() {
-    try {
-      const res = await fetch('/beta-gallery/api/immich/servers', { cache: 'no-store' });
-      const data = await res.json();
-      const servers = data.servers || [];
-      rows.replaceChildren();
-      if (!servers.length) {
-        const empty = document.createElement('p');
-        empty.className = 'text-outline';
-        empty.textContent = 'No Immich servers yet — add one below to browse it from the Gallery sidebar.';
-        rows.appendChild(empty);
-        return;
-      }
-      servers.forEach((row) => rows.appendChild(rowNode(row)));
-    } catch (error) {
-      rows.innerHTML = '<p class="text-status-alert">Could not load Immich servers: ' + error.message + '</p>';
-    }
-  }
-
-  function reset() {
-    form.reset();
-    $('immich-id').value = '';
-    $('immich-insecure').checked = false;
-    saveLabel.textContent = 'Add server';
-    cancel.hidden = true;
-  }
-
-  cancel.addEventListener('click', () => { reset(); say(''); });
-
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const payload = {
-      name: $('immich-name').value.trim(),
-      url: $('immich-url').value.trim(),
-      verifyTls: !$('immich-insecure').checked,
-    };
-    const id = $('immich-id').value;
-    if (id) payload.id = id;
-    const key = $('immich-key').value.trim();
-    if (key) payload.apiKey = key;
-    if (!payload.name || !payload.url) { say('Name and URL are required.', 'bad'); return; }
-    $('immich-save').disabled = true;
-    try {
-      const res = await fetch('/beta-gallery/api/immich/servers', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) { say(data.error || `Save failed (HTTP ${res.status})`, 'bad'); }
-      else {
-        say(`Saved ${data.server.name}.`, 'good');
-        const savedId = data.server.id;
-        reset();
-        await load();
-        // Verify the credentials straight away so a typo surfaces here.
-        const test = await fetch(`/beta-gallery/api/immich/servers/${savedId}/test`, { method: 'POST' });
-        const result = await test.json();
-        say(result.ok ? `Connected to ${data.server.name}${result.version ? ' · ' + result.version : ''}`
-                      : `${data.server.name}: ${result.error || 'connection failed'}`, result.ok ? 'good' : 'bad');
-        load();
-      }
-    } catch (error) {
-      say('Save failed: ' + error.message, 'bad');
-    }
-    $('immich-save').disabled = false;
-  });
-
-  load();
-})();
-</script>
 </body>
 </html>

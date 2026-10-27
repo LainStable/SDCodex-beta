@@ -280,7 +280,7 @@
 
   async function load(root, path) {
     const nextRoot = root || state.root;
-    const url = `/beta-gallery/api/picker/list?root=${encodeURIComponent(nextRoot)}&path=${encodeURIComponent(path || '')}`;
+    const url = `/beta/api/picker/list?root=${encodeURIComponent(nextRoot)}&path=${encodeURIComponent(path || '')}`;
     try {
       const response = await fetch(url, { credentials: 'same-origin' });
       const data = await response.json();

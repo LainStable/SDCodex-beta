@@ -1,11 +1,11 @@
 {
-  "id": "beta-gallery",
-  "name": "Beta Gallery",
-  "version": "0.1.0",
-  "description": "Beta channel of the Gallery plugin: disk-backed media browsing and workflow inspection under its own /beta-gallery API prefix, so it can be installed alongside the stable Gallery. Also serves as the boilerplate for future beta plugin channels.",
+  "id": "beta",
+  "name": "Beta",
+  "version": "0.2.0",
+  "description": "Beta channel of the Gallery plugin: disk-backed media browsing, the media viewer and workflow/caption inspection under its own /beta API prefix, so it can be installed alongside the stable Gallery. Also serves as the boilerplate for future beta plugin channels.",
   "author": "LainStable",
   "repository": "https://github.com/LainStable/SDCodex-beta",
-  "branch": "gallery",
+  "branch": "beta",
   "icon": "photo_library",
   "entry_page": "gallery",
   "nav_items": [],
@@ -27,30 +27,16 @@
   "assistant_actions": [
     {
       "name": "scan_status",
-      "description": "Report beta gallery status for the configured media root (counts, optimize state).",
+      "description": "Report beta gallery status for the configured media root (root, mount state, media counts).",
       "method": "GET",
-      "path": "/beta-gallery/api/status?counts=1"
+      "path": "/beta/api/status?counts=1"
     },
     {
       "name": "rescan_library",
       "description": "Rescan the beta gallery library so new or removed media shows up.",
       "method": "POST",
-      "path": "/beta-gallery/api/rescan",
+      "path": "/beta/api/rescan",
       "confirm": true
-    },
-    {
-      "name": "optimize_folder",
-      "description": "Optimize the images in a beta gallery folder (convert oversized files to the configured format).",
-      "method": "POST",
-      "path": "/beta-gallery/api/optimize",
-      "confirm": true,
-      "params": [
-        {
-          "name": "folder",
-          "required": true,
-          "description": "Folder path relative to the beta gallery root."
-        }
-      ]
     }
   ]
 }
