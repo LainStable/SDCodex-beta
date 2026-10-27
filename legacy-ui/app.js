@@ -12,6 +12,7 @@ let emptyFolderNotice = false;
 const DIRECTORY_TIMEOUT = 15000, MEDIA_TIMEOUT = 30000;
 const GRID_BATCH_SIZE = 100, GRID_WINDOW_SIZE = 300;
 const SCAN_SIBLING_CONCURRENCY = 5; // Bounds simultaneous directory-listing requests during recursive "All Pics" scans.
+const CAPTION_EMBED = new URLSearchParams(location.search).get('embed') === 'caption';
 const IGNORE_SENTINELS = new Set(['folderframe.ignore', '.frameignore']);
 const IGNORED_DIRECTORY_NAMES = new Set([
     '@eadir', '#recycle', '@recycle', '$recycle.bin', '.trash', '.trashes',
@@ -2776,7 +2777,24 @@ function renderGridView() {
                 } finally { clearTimeout(timer); }
             }
             const latest = mediaFiles.indexOf(file);
-            if (latest >= 0) enterFullScreenViewer(latest);
+            if (latest < 0) return;
+            if (CAPTION_EMBED) {
+                let relative = settingsApi.relativeMediaPath(activeSource, file);
+                if (currentFolder) {
+                    const prefix = `${currentFolder}/`;
+                    if (relative.startsWith(prefix)) relative = relative.slice(prefix.length);
+                }
+                try {
+                    window.parent.postMessage({
+                        type: 'sdcodex:beta-media',
+                        file: filename,
+                        path: relative,
+                        url: file
+                    }, window.location.origin);
+                } catch (e) {}
+                return;
+            }
+            enterFullScreenViewer(latest);
         });
         const starred = isStarred(file);
         const starButton = document.createElement('button');

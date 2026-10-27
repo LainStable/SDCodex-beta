@@ -1,7 +1,7 @@
 {
   "id": "betacaption",
   "name": "Beta Caption",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Beta ComfyCaption with the Gallery browser built in (grid, folders and viewer). Uses the same media root as Gallery.",
   "author": "DeeplabSystems",
   "repository": "https://github.com/LainStable/SDCodex-beta",

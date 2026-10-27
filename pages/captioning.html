@@ -216,7 +216,7 @@ tailwind.config = {
 </div>
 
 <!-- ===== MAIN 2-COLUMN WORKSPACE ===== -->
-<main class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_15rem] gap-y-3 overflow-visible">
+<main class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-y-3 overflow-visible">
 
   <!-- ===== LEFT: image grid ===== -->
   <section class="w-full xl:w-auto min-h-[260px] max-h-[42vh] xl:max-h-none flex flex-col border-b xl:border-b-0 xl:border-r border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
@@ -246,8 +246,8 @@ tailwind.config = {
     </div>
   </section>
 
-  <!-- ===== CENTER: active image inspection ===== -->
-  <section class="min-w-0 min-h-[520px] xl:min-h-0 xl:h-full flex flex-col xl:border-r border-outline-variant/20 overflow-hidden">
+  <!-- ===== RIGHT: active image + details + caption ===== -->
+  <section class="min-w-0 min-h-[520px] xl:min-h-0 xl:h-full flex flex-col xl:border-l border-outline-variant/20 overflow-hidden">
     <!-- Image viewer -->
     <div class="flex-1 min-h-0 relative bg-black/40 flex items-center justify-center overflow-hidden">
       <img id="active-img" src="" alt="" class="max-w-full max-h-full object-contain hidden"/>
@@ -280,8 +280,33 @@ tailwind.config = {
       </div>
     </div>
 
+    <!-- SD prompt inspector -->
+    <aside class="shrink-0 min-h-[180px] max-h-[32vh] flex flex-col border-t border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
+      <div class="shrink-0 px-3 py-2 border-b border-outline-variant/20">
+        <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">SD Prompt Inspector</span>
+      </div>
+      <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
+        <div>
+          <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Positive</div>
+          <div id="sd-positive" class="font-code-sm text-code-sm text-on-surface-variant bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[40px] whitespace-pre-wrap">—</div>
+        </div>
+        <div>
+          <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Negative</div>
+          <div id="sd-negative" class="font-code-sm text-code-sm text-status-alert/80 bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[30px] whitespace-pre-wrap">—</div>
+        </div>
+        <div>
+          <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Settings</div>
+          <div id="sd-setting" class="font-code-sm text-code-sm text-on-surface-variant/70 bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[30px] whitespace-pre-wrap">—</div>
+        </div>
+        <div>
+          <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Workflow</div>
+          <div id="sd-workflow" class="font-code-sm text-code-sm text-secondary/70 bg-surface-container p-2 rounded border border-outline-variant/20">—</div>
+        </div>
+      </div>
+    </aside>
+
     <!-- Caption editor -->
-    <div class="shrink-0 flex flex-col border-t border-outline-variant/20 bg-surface-container-lowest/50" style="min-height:160px;max-height:280px;">
+    <div class="shrink-0 flex flex-col border-t border-outline-variant/20 bg-surface-container-lowest/50" style="min-height:160px;max-height:240px;">
       <div class="flex items-center justify-between px-3 py-1.5 border-b border-outline-variant/15">
         <div class="flex items-center gap-2">
           <span class="material-symbols-outlined text-[14px] text-outline">edit_note</span>
@@ -302,31 +327,6 @@ tailwind.config = {
       <div id="tag-cloud" class="px-3 pb-2 flex flex-wrap gap-1 min-h-0"></div>
     </div>
   </section>
-
-  <!-- ===== RIGHT: SD prompt inspector ===== -->
-  <aside class="w-full xl:w-auto min-h-[220px] flex flex-col xl:border-l border-outline-variant/20 bg-surface-container-lowest/30 overflow-hidden">
-    <div class="shrink-0 px-3 py-2 border-b border-outline-variant/20">
-      <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">SD Prompt Inspector</span>
-    </div>
-    <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
-      <div>
-        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Positive</div>
-        <div id="sd-positive" class="font-code-sm text-code-sm text-on-surface-variant bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[40px] whitespace-pre-wrap">—</div>
-      </div>
-      <div>
-        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Negative</div>
-        <div id="sd-negative" class="font-code-sm text-code-sm text-status-alert/80 bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[30px] whitespace-pre-wrap">—</div>
-      </div>
-      <div>
-        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Settings</div>
-        <div id="sd-setting" class="font-code-sm text-code-sm text-on-surface-variant/70 bg-surface-container p-2 rounded border border-outline-variant/20 min-h-[30px] whitespace-pre-wrap">—</div>
-      </div>
-      <div>
-        <div class="font-label-sm text-label-sm text-outline uppercase tracking-wider mb-1">Workflow</div>
-        <div id="sd-workflow" class="font-code-sm text-code-sm text-secondary/70 bg-surface-container p-2 rounded border border-outline-variant/20">—</div>
-      </div>
-    </div>
-  </aside>
 </main>
 
 <!-- ===== FOLDER BROWSER (full Gallery page: folders, media grid and viewer) ===== -->
@@ -973,14 +973,14 @@ async function openFolders() {
     browseMode = 'gallery';
     browseRoot = gallery;
     const album = !current || current === gallery ? '' : current.slice(gallery.length + 1);
-    galleryPicker.src = `${GALLERY_PAGE}?album=${encodeURIComponent(album)}`;
+    galleryPicker.src = `${GALLERY_PAGE}?album=${encodeURIComponent(album)}&embed=caption`;
     galleryFoot.hidden = false;
   } else {
     browseMode = 'picker';
     browseRoot = root;
     const params = new URLSearchParams({ mode: 'folder' });
     if (root) params.set('root', root);
-    galleryPicker.src = `/api/plugins/betacaption/page/picker?${params.toString()}`;
+    galleryPicker.src = `/api/plugins/betacaption/page/picker?${params.toString()}&embed=caption`;
     galleryFoot.hidden = true;
   }
   folderModal.classList.add('open');
@@ -1004,6 +1004,45 @@ function applyPickedFolder(data) {
   loadFolder(chosen).catch(error => alert(error.message));
 }
 
+function handleBetaMedia(data) {
+  const { file, path, url } = data || {};
+  if (!file || !url) return;
+
+  let idx = -1;
+  if (url) idx = allImages.findIndex(img => img.url === url);
+  if (idx < 0) {
+    const matches = allImages.filter(img => img.file === file);
+    if (matches.length === 1) {
+      idx = allImages.indexOf(matches[0]);
+    } else if (matches.length > 1 && path) {
+      const normPath = String(path).replace(/^\/+/, '').toLowerCase();
+      for (const img of matches) {
+        const imgUrl = String(img.url || '').toLowerCase();
+        if (normPath && (imgUrl.includes(normPath) || imgUrl.includes(encodeURIComponent(normPath)))) {
+          idx = allImages.indexOf(img);
+          break;
+        }
+      }
+      if (idx < 0) idx = allImages.indexOf(matches[0]);
+    } else if (matches.length > 0) {
+      idx = allImages.indexOf(matches[0]);
+    }
+  }
+
+  if (idx >= 0) {
+    selectImage(idx);
+  } else {
+    activeIdx = -1;
+    activeImg.src = url;
+    activeImg.alt = file;
+    activeImg.classList.remove('hidden');
+    imgPlaceholder.classList.add('hidden');
+    imgOverlay.classList.remove('hidden');
+    imgName.textContent = file;
+    imgDims.textContent = '';
+  }
+}
+
 document.getElementById('btn-browse').addEventListener('click', openFolders);
 document.getElementById('use-folder').addEventListener('click', useGalleryFolder);
 document.getElementById('close-folder').addEventListener('click', closeFolderPicker);
@@ -1012,6 +1051,7 @@ window.addEventListener('message', (event) => {
   if (event.origin !== window.location.origin) return;
   if (event.data?.type === 'sdcodex:pick') applyPickedFolder(event.data);
   if (event.data?.type === 'sdcodex:pick-cancel') closeFolderPicker();
+  if (event.data?.type === 'sdcodex:beta-media') handleBetaMedia(event.data);
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && folderModal.classList.contains('open')) closeFolderPicker();
