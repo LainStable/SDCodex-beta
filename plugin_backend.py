@@ -532,7 +532,9 @@ def status():
 @ai_renamer_bp.get("/settings")
 def get_settings():
     settings = _read_settings()
-    return jsonify({**settings, "api_key": "", "api_key_set": bool(settings["api_key"])})
+    # ``root`` lets the studio print the real media path in its CLI preview
+    # without listing the directory first.
+    return jsonify({**settings, "api_key": "", "api_key_set": bool(settings["api_key"]), "root": _browse_root()})
 
 
 @ai_renamer_bp.post("/settings")
