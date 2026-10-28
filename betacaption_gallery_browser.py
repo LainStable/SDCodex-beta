@@ -5,12 +5,10 @@ import json
 import mimetypes
 import os
 import re
-import tempfile
-import time
 import zipfile
 from urllib.parse import quote, unquote
 from flask import Blueprint, Response, jsonify, request, send_file, send_from_directory
-from PIL import Image, ImageSequence
+from PIL import Image
 
 try:
     from sd_prompt_reader.image_data_reader import ImageDataReader
@@ -116,20 +114,6 @@ def folderframe_config():
         "defaults": {"source": "media", "album": "", "view": "folders", "sort": "filename", "interval": 5, "imageMode": "fit", "shuffle": False, "autoRefresh": True, "tvMode": False, "autoplay": False, "controls": True, "showFilenames": True, "showDownloadButton": True, "showCopyButton": True},
         "index": {"refreshInterval": 120},
         "embed": {"refreshInterval": 300, "rememberPreferences": False},
-    })
-
-
-@gallery_bp.get("/optimize-status")
-def optimize_status_compat():
-    # The old gallery UI polls this endpoint while an optimize task is active
-    # and reads the capability flags once at startup. Without them the viewer's
-    # Optimize/Convert buttons stay permanently disabled.
-    return jsonify({
-        "running": False,
-        "status": "idle",
-        "enabled": True,
-        "convert": True,
-        "formats": ["jpg", "png", "webp", "gif", "tiff", "bmp"],
     })
 
 
@@ -1098,152 +1082,4 @@ def export_workflows():
     )
 
 
-def _operation_target(value):
-    root = os.path.realpath(resolve_browse_root())
-    target = os.path.realpath(os.path.join(root, str(value or "").strip("/\\")))
-    if not is_safe_path(root, target):
-        return None
-    return target
 
-
-def _optimize_image(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
-        raise ValueError("Only JPEG, PNG and WebP images can be optimized")
-    source_size = os.path.getsize(path)
-    temp_path = None
-    try:
-        with Image.open(path) as source:
-            image = source
-            save_format = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}[ext]
-            options = {"optimize": True}
-            if save_format == "JPEG":
-                if image.mode not in ("RGB", "L"):
-                    image = image.convert("RGB")
-                # Preserve the source JPEG quantization tables; optimization
-                # should reduce file size without silently lowering quality.
-                options.update(quality="keep", subsampling="keep", exif=source.info.get("exif", b""))
-            elif save_format == "WEBP":
-                options.update(lossless=True, method=6)
-            with tempfile.NamedTemporaryFile(dir=os.path.dirname(path), suffix=ext, delete=False) as tmp:
-                temp_path = tmp.name
-            image.save(temp_path, format=save_format, **options)
-        optimized_size = os.path.getsize(temp_path)
-        if optimized_size < source_size:
-            os.replace(temp_path, path)
-            temp_path = None
-            return source_size, optimized_size, True
-        return source_size, source_size, False
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-@gallery_bp.post("/optimize")
-def optimize_media():
-    data = request.get_json(silent=True) or {}
-    path = _operation_target(data.get("path")) if data.get("path") else None
-    folder = _operation_target(data.get("folder")) if "folder" in data else None
-    if path is None and folder is None:
-        return jsonify({"error": "path or folder is required"}), 400
-    if folder is not None and not os.path.isdir(folder):
-        return jsonify({"error": "Folder not found"}), 404
-    targets = [path] if path else [
-        _operation_target(os.path.relpath(os.path.join(folder, name), os.path.realpath(resolve_browse_root())))
-        for name in sorted(os.listdir(folder))
-        if os.path.isfile(os.path.join(folder, name))
-        and os.path.splitext(name)[1].lower() in {".jpg", ".jpeg", ".png", ".webp"}
-    ]
-    targets = [target for target in targets if target]
-    if path and not os.path.isfile(path):
-        return jsonify({"error": "Image not found"}), 404
-    before = after = optimized = 0
-    errors = []
-    for target in targets:
-        try:
-            old, new, changed = _optimize_image(target)
-            before += old
-            after += new
-            optimized += int(changed)
-        except Exception as exc:
-            errors.append({"file": os.path.basename(target), "error": str(exc)})
-    return jsonify({"ok": not errors, "processed": len(targets) - len(errors), "optimized": optimized,
-                    "bytesBefore": before, "bytesAfter": after, "errors": errors})
-
-
-def _convert_image(path, fmt):
-    ext = {"jpg": ".jpg", "jpeg": ".jpg", "png": ".png", "webp": ".webp", "gif": ".gif", "tiff": ".tiff", "bmp": ".bmp"}[fmt]
-    output = os.path.splitext(path)[0] + ext
-    if os.path.realpath(output) == os.path.realpath(path):
-        return None
-    if os.path.exists(output):
-        output = os.path.splitext(path)[0] + "_converted" + ext
-    if os.path.exists(output):
-        output = os.path.splitext(path)[0] + f"_converted_{int(time.time() * 1000)}" + ext
-    temp_path = None
-    try:
-        with Image.open(path) as source:
-            animated = fmt == "gif" and getattr(source, "is_animated", False)
-            frames = [frame.copy() for frame in ImageSequence.Iterator(source)] if animated else []
-            image = frames[0] if frames else source.copy()
-            if fmt in {"jpg", "jpeg"}:
-                if image.mode not in ("RGB", "L"):
-                    if "A" in image.getbands():
-                        background = Image.new("RGB", image.size, (255, 255, 255))
-                        background.paste(image.convert("RGBA"), mask=image.convert("RGBA").getchannel("A"))
-                        image = background
-                    else:
-                        image = image.convert("RGB")
-            with tempfile.NamedTemporaryFile(dir=os.path.dirname(output), suffix=ext, delete=False) as tmp:
-                temp_path = tmp.name
-            save_args = {}
-            if animated:
-                save_args.update(save_all=True, append_images=frames[1:], duration=source.info.get("duration", 100), loop=source.info.get("loop", 0))
-            image.save(temp_path, format={"jpg": "JPEG", "jpeg": "JPEG", "tiff": "TIFF"}.get(fmt, fmt.upper()), **save_args)
-        os.replace(temp_path, output)
-        temp_path = None
-        return output
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-@gallery_bp.post("/convert")
-def convert_media():
-    data = request.get_json(silent=True) or {}
-    fmt = str(data.get("format", "")).lower()
-    if fmt not in {"jpg", "jpeg", "png", "webp", "gif", "tiff", "bmp"}:
-        return jsonify({"error": "Unsupported output format"}), 400
-    path = _operation_target(data.get("path")) if data.get("path") else None
-    folder = _operation_target(data.get("folder")) if "folder" in data else None
-    if path is None and folder is None:
-        return jsonify({"error": "path or folder is required"}), 400
-    if folder is not None and not os.path.isdir(folder):
-        return jsonify({"error": "Folder not found"}), 404
-    targets = [path] if path else [
-        _operation_target(os.path.relpath(os.path.join(folder, name), os.path.realpath(resolve_browse_root())))
-        for name in sorted(os.listdir(folder))
-        if os.path.isfile(os.path.join(folder, name)) and os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS
-    ]
-    targets = [target for target in targets if target]
-    if path and (not os.path.isfile(path) or os.path.splitext(path)[1].lower() not in IMAGE_EXTENSIONS):
-        return jsonify({"error": "Image not found or format is unsupported"}), 404
-    converted = skipped = deleted = 0
-    errors = []
-    for source in targets:
-        if os.path.splitext(source)[1].lower() == "." + fmt or (fmt == "jpg" and os.path.splitext(source)[1].lower() == ".jpeg"):
-            skipped += 1
-            continue
-        try:
-            output = _convert_image(source, fmt)
-            if not output:
-                skipped += 1
-                continue
-            converted += 1
-            if data.get("delete"):
-                os.remove(source)
-                deleted += 1
-        except Exception as exc:
-            errors.append({"file": os.path.basename(source), "error": str(exc)})
-    return jsonify({"ok": not errors, "converted": converted, "skipped": skipped, "deleted": deleted,
-                    "format": fmt, "errors": errors})
